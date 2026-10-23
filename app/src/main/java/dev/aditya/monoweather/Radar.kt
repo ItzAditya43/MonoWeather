@@ -89,8 +89,14 @@ private fun bitmap(url: String): ImageBitmap? = runCatching {
     val con = URL(url).openConnection() as HttpURLConnection
     con.connectTimeout = 7000; con.readTimeout = 9000
     con.setRequestProperty("User-Agent", Repo.UA)
-    try { con.inputStream.use { BitmapFactory.decodeStream(it)?.asImageBitmap() } } finally { con.disconnect() }
+    try {
+        val bytes = con.inputStream.use { it.readBytes() }
+        Net.bytes.addAndGet(bytes.size.toLong())
+        BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.asImageBitmap()
+    } finally { con.disconnect() }
 }.getOrNull()
+
+private var appCtx: android.content.Context? = null
 
 private suspend fun load(p: Place): RadarData = withContext(Dispatchers.IO) {
     memo[p.key]?.let { (at, d) -> if (System.currentTimeMillis() - at < 10 * 60_000) return@withContext d }
@@ -117,6 +123,7 @@ private suspend fun load(p: Place): RadarData = withContext(Dispatchers.IO) {
         RadarData(base.awaitAll(), labels.awaitAll(), frames.awaitAll(), (x - cx + 1).toFloat(), (y - cy + 1).toFloat())
     }
     if (d.frames.all { f -> f.tiles.all { it == null } }) error("Radar unavailable")
+    Net.flush(appCtx ?: return@withContext d)
     memo[p.key] = System.currentTimeMillis() to d
     d
 }
@@ -134,8 +141,14 @@ fun RadarCard(place: Place, w: Weather, pal: Palette, theme: Theme, label: @Comp
     var frame by remember { mutableIntStateOf(FRAMES - 1) }
     var playing by remember { mutableStateOf(true) }
 
+    // optional: load by itself on unmetered networks
+    LaunchedEffect(place.key) {
+        val cm = ctx.getSystemService(android.net.ConnectivityManager::class.java)
+        if (state == "idle" && Prefs.radarWifi(ctx) && !cm.isActiveNetworkMetered && !minimised) state = "loading"
+    }
     LaunchedEffect(state, place.key) {
         if (state != "loading") return@LaunchedEffect
+        appCtx = ctx.applicationContext
         runCatching { load(place) }.onSuccess { data = it; frame = it.frames.lastIndex; state = "ready" }.onFailure { state = "failed" }
     }
     LaunchedEffect(data, playing) {

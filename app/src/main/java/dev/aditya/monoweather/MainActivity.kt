@@ -19,11 +19,22 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
 data class City(val place: Place, val weather: Weather?, val loading: Boolean = false, val error: String? = null)
-data class UiState(val cities: List<City> = emptyList(), val locating: Boolean = false, val notice: String? = null, val theme: Theme = Theme.MINIMALIST, val imperial: Boolean = false)
+data class UiState(
+    val cities: List<City> = emptyList(), val locating: Boolean = false, val notice: String? = null,
+    val theme: Theme = Theme.MINIMALIST, val anim: Anim = Anim.FULL, val haptics: Boolean = true,
+    val hidden: Set<Section> = emptySet(),
+    /** Bumped whenever a setting changes, so settings screens re-read [Prefs]. */
+    val rev: Int = 0,
+)
 
 class MainVm(app: Application) : AndroidViewModel(app) {
     private val ctx get() = getApplication<Application>()
-    private val _state = MutableStateFlow(UiState(Repo.places(app).map { City(it, Repo.cached(app, it)) }, theme = Prefs.theme(app), imperial = Prefs.imperial(app)))
+    private val _state = MutableStateFlow(
+        UiState(
+            Repo.places(app).map { City(it, Repo.cached(app, it)) }, theme = Prefs.theme(app),
+            anim = Prefs.anim(app), haptics = Prefs.haptics(app), hidden = Section.entries.filterNot { Prefs.shown(app, it) }.toSet(),
+        )
+    )
     val state = _state.asStateFlow()
     /** Pager index to scroll to after adding a city. */
     val jumpTo = MutableSharedFlow<Int>(extraBufferCapacity = 1)
@@ -85,10 +96,22 @@ class MainVm(app: Application) : AndroidViewModel(app) {
 
     fun clearNotice() = _state.update { it.copy(notice = null) }
 
-    fun setImperial(on: Boolean) {
-        Prefs.setImperial(ctx, on)
-        _state.update { s -> s.copy(imperial = on, cities = s.cities.map { it.copy(weather = Repo.cached(ctx, it.place) ?: it.weather) }) }
+    /** Re-reads every setting and rebuilds the forecasts from cache (units, clock) and the widgets. */
+    fun settingsChanged() {
+        _state.update { s ->
+            s.copy(
+                theme = Prefs.theme(ctx), anim = Prefs.anim(ctx), haptics = Prefs.haptics(ctx),
+                hidden = Section.entries.filterNot { Prefs.shown(ctx, it) }.toSet(), rev = s.rev + 1,
+                cities = s.cities.map { it.copy(weather = Repo.cached(ctx, it.place) ?: it.weather) },
+            )
+        }
         Widget.updateAll(ctx)
+    }
+
+    fun clearCache() {
+        Repo.clearCache(ctx)
+        _state.update { s -> s.copy(cities = s.cities.map { it.copy(weather = null) }, notice = "Saved forecasts cleared", rev = s.rev + 1) }
+        _state.value.cities.forEach { refresh(it.place.key, force = true) }
     }
 
     /** Moves a city to the front, making it the widget city. */
@@ -102,18 +125,9 @@ class MainVm(app: Application) : AndroidViewModel(app) {
 
     fun setTheme(t: Theme) {
         Prefs.setTheme(ctx, t)
-        _state.update { it.copy(theme = t) }
+        settingsChanged()
+        Widget.syncPicker(ctx)
     }
-}
-
-object Prefs {
-    private fun p(c: android.content.Context) = c.getSharedPreferences("mono", android.content.Context.MODE_PRIVATE)
-    fun theme(c: android.content.Context) = runCatching { Theme.valueOf(p(c).getString("theme", null)!!) }.getOrDefault(Theme.MINIMALIST)
-    fun setTheme(c: android.content.Context, t: Theme) = p(c).edit().putString("theme", t.name).apply()
-    fun imperial(c: android.content.Context) = p(c).getBoolean("imperial", false)
-    fun setImperial(c: android.content.Context, on: Boolean) = p(c).edit().putBoolean("imperial", on).apply()
-    fun radarMin(c: android.content.Context) = p(c).getBoolean("radarMin", false)
-    fun setRadarMin(c: android.content.Context, on: Boolean) = p(c).edit().putBoolean("radarMin", on).apply()
 }
 
 class MainActivity : ComponentActivity() {
@@ -123,6 +137,8 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
         Sync.schedule(this)
+        Widget.syncPicker(this)
+        rememberWidgetTap(intent)
         setContent {
             MaterialTheme(
                 darkColorScheme(
@@ -131,6 +147,21 @@ class MainActivity : ComponentActivity() {
                     surfaceContainerHigh = Color(0xFF1C1C1C), surfaceContainerHighest = Color(0xFF1C1C1C),
                 )
             ) { App(vm) }
+        }
+    }
+
+    override fun onNewIntent(intent: android.content.Intent) {
+        super.onNewIntent(intent)
+        rememberWidgetTap(intent)
+    }
+
+    /** A widget tap carries the widget's exact screen position, which lets glass widgets line up with the wallpaper. */
+    private fun rememberWidgetTap(i: android.content.Intent?) {
+        val id = i?.getIntExtra(android.appwidget.AppWidgetManager.EXTRA_APPWIDGET_ID, -1) ?: -1
+        val r = i?.sourceBounds
+        if (id > 0 && r != null) {
+            Prefs.setWidgetBounds(this, id, r)
+            Widget.updateAll(this)
         }
     }
 

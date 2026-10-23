@@ -79,6 +79,25 @@ object Widget {
         PulseDark::class.java to (Design.PULSE to false), PulseGlass::class.java to (Design.PULSE to true),
     )
 
+    /**
+     * Shows only the current theme's four widgets in the home-screen widget list.
+     * A widget that is already placed stays enabled, so nothing on the home screen breaks.
+     */
+    fun syncPicker(c: Context) {
+        val mid = Prefs.theme(c) == Theme.MIDNIGHT
+        val m = AppWidgetManager.getInstance(c)
+        all.forEach { (cls, spec) ->
+            val cn = ComponentName(c, cls)
+            val mine = (spec.first == Design.ORBIT || spec.first == Design.PULSE) == mid
+            val placed = m.getAppWidgetIds(cn).isNotEmpty()
+            c.packageManager.setComponentEnabledSetting(
+                cn,
+                if (mine || placed) PackageManager.COMPONENT_ENABLED_STATE_ENABLED else PackageManager.COMPONENT_ENABLED_STATE_DISABLED,
+                PackageManager.DONT_KILL_APP,
+            )
+        }
+    }
+
     fun updateAll(c: Context) {
         val m = AppWidgetManager.getInstance(c)
         all.forEach { (cls, spec) ->
@@ -97,13 +116,16 @@ object WidgetRenderer {
         val o = m.getAppWidgetOptions(id)
         val wDp = o.getInt(AppWidgetManager.OPTION_APPWIDGET_MIN_WIDTH).takeIf { it > 0 } ?: 320
         val hDp = o.getInt(AppWidgetManager.OPTION_APPWIDGET_MAX_HEIGHT).takeIf { it > 0 } ?: 80
-        m.updateAppWidget(id, views(c, design, glass, wDp, hDp))
+        m.updateAppWidget(id, views(c, design, glass, wDp, hDp, id))
     }
 
-    fun views(c: Context, design: Design, glass: Boolean, wDp: Int, hDp: Int): RemoteViews {
+    /** [id] is the placed widget (null for in-app previews): it picks the widget's own city and its wallpaper slice. */
+    fun views(c: Context, design: Design, glass: Boolean, wDp: Int, hDp: Int, id: Int?): RemoteViews {
         val d = c.resources.displayMetrics.density
-        val home = Repo.places(c).firstOrNull()
+        val places = Repo.places(c)
+        val home = id?.let { Prefs.widgetCity(c, it) }?.let { k -> places.firstOrNull { it.key == k } } ?: places.firstOrNull()
         val w = home?.let { Repo.cached(c, it) }
+        val anim = Prefs.anim(c)
         val midnight = design == Design.ORBIT || design == Design.PULSE
         val pal = if (midnight) midnightPaletteOf(w?.kind ?: Kind.CLEAR, w?.isDay ?: false) else paletteOf(w?.kind ?: Kind.CLEAR, w?.isDay ?: false)
 
@@ -112,11 +134,30 @@ object WidgetRenderer {
             Design.ORBIT -> R.layout.widget_orbit; Design.PULSE -> R.layout.widget_pulse
         }
         val v = RemoteViews(c.packageName, layout)
-        v.setImageViewBitmap(R.id.w_bg, background(wDp, hDp, d, pal, glass, midnight))
-        val fx = intArrayOf(R.id.w_f0, R.id.w_f1, R.id.w_f2, R.id.w_f3, R.id.w_f4, R.id.w_f5, R.id.w_f6, R.id.w_f7)
-        fx.forEachIndexed { i, vid -> v.setImageViewBitmap(vid, particles(wDp, hDp, w, pal, i)) }
+        val wall = if (glass && id != null) Prefs.widgetBounds(c, id)?.let { Glass.slice(c, it, (wDp * d).toInt(), (hDp * d).toInt()) } else null
+        v.setImageViewBitmap(R.id.w_bg, background(wDp, hDp, d, pal, glass, midnight, wall))
+        // live layer: Remote Compose on Android 16+, flip-book frames otherwise
+        val rc = w?.let { RcWidget.layer(c, (wDp * d).toInt(), (hDp * d).toInt(), it, pal, design, anim) }
+        v.removeAllViews(R.id.w_rc)
+        // keep moving particles inside the card's rounded corners
+        for (vid in intArrayOf(R.id.w_rc, R.id.w_fx)) {
+            v.setViewOutlinePreferredRadius(vid, 24f, android.util.TypedValue.COMPLEX_UNIT_DIP)
+            v.setBoolean(vid, "setClipToOutline", true)
+        }
+        if (rc != null) {
+            v.addView(R.id.w_rc, rc)
+            v.setViewVisibility(R.id.w_fx, android.view.View.GONE)
+        } else if (anim == Anim.OFF || w == null) {
+            v.setViewVisibility(R.id.w_fx, android.view.View.GONE)
+        } else {
+            val fx = intArrayOf(R.id.w_f0, R.id.w_f1, R.id.w_f2, R.id.w_f3, R.id.w_f4, R.id.w_f5, R.id.w_f6, R.id.w_f7)
+            fx.forEachIndexed { i, vid -> v.setImageViewBitmap(vid, particles(wDp, hDp, w, pal, i)) }
+            v.setInt(R.id.w_fx, "setFlipInterval", if (anim == Anim.REDUCED) 400 else 220)
+        }
         v.setTextViewText(R.id.w_temp, w?.let { "${it.temp}°" } ?: "--")
-        val open = PendingIntent.getActivity(c, 0, Intent(c, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+        // each widget gets its own tap intent; the tap's screen bounds teach glass widgets where they sit
+        val tap = Intent(c, MainActivity::class.java).putExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, id ?: -1)
+        val open = PendingIntent.getActivity(c, id ?: 0, tap, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
         v.setOnClickPendingIntent(R.id.w_root, open)
 
         when (design) {
@@ -128,7 +169,7 @@ object WidgetRenderer {
             Design.ORBIT -> {
                 v.setTextColor(R.id.w_temp, pal.accent.toArgb())
                 v.setTextViewText(R.id.w_cond, w?.let { labelOf(it.code) } ?: "Tap to set up")
-                v.setImageViewBitmap(R.id.w_arc, orbit(w, pal, d))
+                v.setImageViewBitmap(R.id.w_arc, orbit(w, pal, d, drawSun = rc == null))
             }
             Design.PULSE -> {
                 v.setTextViewText(R.id.w_cond, w?.let { pulseCaption(it) } ?: "Tap to pick a city")
@@ -198,13 +239,27 @@ object WidgetRenderer {
 
     private fun bmp(wDp: Int, hDp: Int, d: Float) = Bitmap.createBitmap((wDp * d).toInt().coerceAtLeast(1), (hDp * d).toInt().coerceAtLeast(1), Bitmap.Config.ARGB_8888)
 
-    private fun background(wDp: Int, hDp: Int, d: Float, pal: Palette, glass: Boolean, midnight: Boolean): Bitmap {
+    private fun background(wDp: Int, hDp: Int, d: Float, pal: Palette, glass: Boolean, midnight: Boolean, wall: Bitmap? = null): Bitmap {
         val b = bmp(wDp, hDp, d)
         val cv = Canvas(b)
         val r = RectF(0f, 0f, b.width.toFloat(), b.height.toFloat())
         val rad = 24 * d
         val p = Paint(Paint.ANTI_ALIAS_FLAG)
         when {
+            glass && wall != null -> {
+                // real frosted glass: the blurred slice of the user's wallpaper behind this widget, lifted with a milky veil
+                cv.save()
+                cv.clipPath(Path().apply { addRoundRect(r, rad, rad, Path.Direction.CW) })
+                cv.drawBitmap(wall, null, r, Paint(Paint.FILTER_BITMAP_FLAG))
+                cv.drawColor(0x29FFFFFF)
+                p.shader = LinearGradient(0f, 0f, 0f, r.bottom * 0.45f, 0x24FFFFFF, 0x00FFFFFF, Shader.TileMode.CLAMP)
+                cv.drawRect(r, p)
+                p.shader = android.graphics.BitmapShader(grain, Shader.TileMode.REPEAT, Shader.TileMode.REPEAT); p.alpha = 14
+                cv.drawRect(r, p); p.alpha = 255
+                p.shader = LinearGradient(0f, 0f, 0f, 3 * d, 0x80FFFFFF.toInt(), 0x00FFFFFF, Shader.TileMode.CLAMP)
+                cv.drawRect(0f, 0f, r.right, 3 * d, p)
+                cv.restore()
+            }
             glass -> {
                 // frosted grey glass: the wallpaper shows through, with frost grain, depth and a bright top edge
                 p.shader = LinearGradient(0f, 0f, r.right, r.bottom, 0x3DFFFFFF, 0x12FFFFFF, Shader.TileMode.CLAMP)
@@ -277,7 +332,7 @@ object WidgetRenderer {
     }
 
     /** Today's sun path: dotted arc sunrise→sunset, solid up to now, glowing dot at the sun's position. */
-    private fun orbit(w: Weather?, pal: Palette, d: Float): Bitmap {
+    private fun orbit(w: Weather?, pal: Palette, d: Float, drawSun: Boolean = true): Bitmap {
         val b = bmp(84, 56, d)
         val cv = Canvas(b)
         val cx = b.width / 2f; val cy = 42 * d; val r = 32 * d
@@ -291,10 +346,12 @@ object WidgetRenderer {
         cv.drawArc(rect, 180f, 180f * f, false, p)
         val a = PI + PI * f
         val dx = cx + (cos(a) * r).toFloat(); val dy = cy + (sin(a) * r).toFloat()
-        val glow = Paint(Paint.ANTI_ALIAS_FLAG).apply { shader = RadialGradient(dx, dy, 14 * d, pal.accent.copy(alpha = 0.6f).toArgb(), 0, Shader.TileMode.CLAMP) }
-        cv.drawCircle(dx, dy, 14 * d, glow)
-        val dot = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = if (w?.isDay != false) android.graphics.Color.WHITE else pal.accent.toArgb() }
-        cv.drawCircle(dx, dy, 4 * d, dot)
+        if (drawSun) {
+            val glow = Paint(Paint.ANTI_ALIAS_FLAG).apply { shader = RadialGradient(dx, dy, 14 * d, pal.accent.copy(alpha = 0.6f).toArgb(), 0, Shader.TileMode.CLAMP) }
+            cv.drawCircle(dx, dy, 14 * d, glow)
+            val dot = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = if (w?.isDay != false) android.graphics.Color.WHITE else pal.accent.toArgb() }
+            cv.drawCircle(dx, dy, 4 * d, dot)
+        }
         val t = Paint(Paint.ANTI_ALIAS_FLAG).apply { textAlign = Paint.Align.CENTER; textSize = 8.5f * d; color = 0x66FFFFFF; typeface = regular }
         cv.drawText(w?.sunrise ?: "", cx - r, cy + 12 * d, t)
         cv.drawText(w?.sunset ?: "", cx + r, cy + 12 * d, t)
@@ -348,7 +405,14 @@ class SyncWorker(c: Context, p: WorkerParameters) : CoroutineWorker(c, p) {
     override suspend fun doWork(): Result {
         val places = Repo.places(applicationContext)
         if (places.isEmpty()) return Result.success()
+        val before = Prefs.bytesThisMonth(applicationContext)
         val results = places.map { runCatching { Repo.refresh(applicationContext, it) } }
+        val kb = (Prefs.bytesThisMonth(applicationContext) - before) / 1024
+        val first = results.first()
+        Prefs.log(
+            applicationContext,
+            if (first.isSuccess) "${first.getOrNull()?.source} · ok · $kb KB" else "failed · ${first.exceptionOrNull()?.message?.take(40) ?: "no answer"}",
+        )
         Widget.updateAll(applicationContext)
         results.first().getOrNull()?.let { Alerts.check(applicationContext, it) }
         return if (results.first().isSuccess || runAttemptCount >= 3) Result.success() else Result.retry()
@@ -358,10 +422,10 @@ class SyncWorker(c: Context, p: WorkerParameters) : CoroutineWorker(c, p) {
 object Sync {
     private val online = Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build()
 
-    fun schedule(c: Context) {
+    fun schedule(c: Context, replace: Boolean = false) {
         WorkManager.getInstance(c).enqueueUniquePeriodicWork(
-            "sync", ExistingPeriodicWorkPolicy.KEEP,
-            PeriodicWorkRequestBuilder<SyncWorker>(30, TimeUnit.MINUTES).setConstraints(online).build(),
+            "sync", if (replace) ExistingPeriodicWorkPolicy.UPDATE else ExistingPeriodicWorkPolicy.KEEP,
+            PeriodicWorkRequestBuilder<SyncWorker>(Prefs.refreshMin(c).toLong(), TimeUnit.MINUTES).setConstraints(online).build(),
         )
     }
 
@@ -389,14 +453,15 @@ object Alerts {
         val p = prefs(c)
         val now = System.currentTimeMillis()
         if (rainOn(c) && w.kind != Kind.RAIN && w.kind != Kind.STORM && now - p.getLong("lastRain", 0) > 3 * 3600_000) {
-            val soon = w.hours.drop(1).take(2).firstOrNull { it.precip >= 60 }
+            val soon = w.hours.drop(1).take(2).firstOrNull { it.precip >= Prefs.rainPct(c) }
             if (soon != null) {
                 notify(c, 1, "Rain soon in ${w.place}", "${soon.precip}% chance around ${soon.label}. Take an umbrella.")
                 p.edit().putLong("lastRain", now).apply()
             }
         }
         val today = LocalDate.now().toString()
-        if (morningOn(c) && LocalTime.now().hour in 6..9 && p.getString("lastMorning", "") != today) {
+        val mh = Prefs.morningHour(c)
+        if (morningOn(c) && LocalTime.now().hour in mh..(mh + 1) && p.getString("lastMorning", "") != today) {
             val d = w.days.firstOrNull()
             val air = w.aqi?.let { " · AQI $it" } ?: ""
             notify(c, 2, "Today in ${w.place}", "${labelOf(w.code)}, ${w.hi}° / ${w.lo}° · rain ${d?.precip ?: 0}%$air")

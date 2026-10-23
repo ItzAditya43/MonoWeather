@@ -8,7 +8,7 @@ plugins {
 
 android {
     namespace = "dev.aditya.monoweather"
-    compileSdk = 35
+    compileSdk = 36
     defaultConfig {
         applicationId = "dev.aditya.monoweather"
         minSdk = 26
@@ -41,9 +41,11 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
-    kotlinOptions { jvmTarget = "17" }
+    lint { disable += "RestrictedApi" }
     buildFeatures { compose = true }
 }
+
+kotlin { compilerOptions { jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17) } }
 
 dependencies {
     implementation(platform("androidx.compose:compose-bom:2024.12.01"))
@@ -54,6 +56,9 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.7")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.7")
     implementation("androidx.work:work-runtime-ktx:2.10.0")
+    // Remote Compose: real, launcher-side animation for widgets on Android 16+ (falls back to frame widgets below that)
+    implementation("androidx.compose.remote:remote-creation-android:1.0.0-alpha22")
+    implementation("androidx.compose.remote:remote-core:1.0.0-alpha22")
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.json:json:20240303")
 }

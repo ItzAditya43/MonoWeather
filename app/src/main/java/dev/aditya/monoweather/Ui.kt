@@ -62,6 +62,9 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -123,14 +126,14 @@ val Inter = androidx.compose.ui.text.font.FontFamily(
     }
 )
 
-private val Dim = Ink.copy(alpha = 0.58f)
-private val Faint = Ink.copy(alpha = 0.10f)
-private val Hair = Ink.copy(alpha = 0.08f)
+internal val Dim = Ink.copy(alpha = 0.58f)
+internal val Faint = Ink.copy(alpha = 0.10f)
+internal val Hair = Ink.copy(alpha = 0.08f)
 private const val COARSE = Manifest.permission.ACCESS_COARSE_LOCATION
 
 /** The palette of the page on screen (animated) and the chosen theme. */
-private val LocalPal = staticCompositionLocalOf { paletteOf(Kind.CLOUDY, true) }
-private val LocalTheme = staticCompositionLocalOf { Theme.MINIMALIST }
+internal val LocalPal = staticCompositionLocalOf { paletteOf(Kind.CLOUDY, true) }
+internal val LocalTheme = staticCompositionLocalOf { Theme.MINIMALIST }
 
 // ---------- scales for the hold-to-expand cards (single hue, faint → strong) ----------
 private data class Band(val from: Int, val to: Int, val name: String, val advice: String)
@@ -197,11 +200,13 @@ internal fun nowText(w: Weather): String {
 
 /** Card surface: tinted gradient in Minimalist, hairline glass on black in Midnight. */
 @Composable
-private fun Modifier.surface(r: Dp = 22.dp): Modifier {
+internal fun Modifier.surface(r: Dp = 22.dp): Modifier {
     val pal = LocalPal.current
     val shape = RoundedCornerShape(r)
     return if (LocalTheme.current == Theme.MIDNIGHT)
-        background(Brush.verticalGradient(listOf(Color.White.copy(alpha = 0.035f), Color.White.copy(alpha = 0.008f))), shape).border(1.dp, Hair, shape)
+        // OLED glass: almost no fill, light catching the top edge
+        background(Brush.verticalGradient(0f to Color.White.copy(alpha = 0.04f), 0.6f to Color.White.copy(alpha = 0.006f)), shape)
+            .border(1.dp, Brush.verticalGradient(0f to Color.White.copy(alpha = 0.13f), 0.18f to Color.White.copy(alpha = 0.05f), 1f to Color.White.copy(alpha = 0.04f)), shape)
     else
         background(Brush.verticalGradient(listOf(pal.top.copy(alpha = 0.55f), pal.bottom.copy(alpha = 0.7f))), shape)
             .border(1.dp, Brush.verticalGradient(listOf(pal.accent.copy(alpha = 0.22f), pal.accent.copy(alpha = 0.04f))), shape)
@@ -212,9 +217,11 @@ private fun Modifier.surface(r: Dp = 22.dp): Modifier {
 fun App(vm: MainVm) {
     val s by vm.state.collectAsStateWithLifecycle()
     val ctx = LocalContext.current
-    val haptic = LocalHapticFeedback.current
+    val realHaptic = LocalHapticFeedback.current
+    val haptic = if (s.haptics) realHaptic else NoHaptics
     var searching by remember { mutableStateOf(false) }
     var detail by remember { mutableStateOf<Pair<String, Weather>?>(null) }
+    var settings by remember { mutableStateOf(false) }
     val hasPerm = { ctx.checkSelfPermission(COARSE) == PackageManager.PERMISSION_GRANTED }
     val perm = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         if (granted) vm.locateOnce() else if (vm.state.value.cities.isEmpty()) searching = true
@@ -234,10 +241,13 @@ fun App(vm: MainVm) {
     val bottom by animateColorAsState(target.bottom, tween(900), label = "bottom")
     val pal = target.copy(accent = accent, top = top, bottom = bottom)
 
-    CompositionLocalProvider(LocalPal provides pal, LocalTheme provides s.theme, androidx.compose.material3.LocalTextStyle provides TextStyle(fontFamily = Inter)) {
+    CompositionLocalProvider(
+        LocalPal provides pal, LocalTheme provides s.theme, LocalHapticFeedback provides haptic,
+        androidx.compose.material3.LocalTextStyle provides TextStyle(fontFamily = Inter),
+    ) {
         Box(Modifier.fillMaxSize().background(Color.Black)) {
             Box(Modifier.fillMaxSize().blur(if (detail != null) 18.dp else 0.dp)) {
-                Crossfade(Triple(kind, isDay, s.theme), animationSpec = tween(1200), label = "scene") { (k, d, t) -> Scene(k, d, t) }
+                Crossfade(Triple(kind, isDay, s.theme), animationSpec = tween(1200), label = "scene") { (k, d, t) -> Scene(k, d, t, s.anim) }
                 if (s.cities.isEmpty()) {
                     Welcome(s, onSearch = { searching = true }, onLocate = { if (hasPerm()) vm.locateOnce() else perm.launch(COARSE) })
                 } else {
@@ -249,12 +259,11 @@ fun App(vm: MainVm) {
                             modifier = Modifier.fillMaxSize(),
                         ) {
                             CityPage(
-                                city, page, s.cities.size, s.theme,
+                                city, page, s.cities.size, s.theme, s.hidden,
                                 onSearch = { searching = true },
+                                onSettings = { haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove); settings = true },
                                 onRetry = { vm.refresh(city.place.key, force = true) },
                                 onHold = { key -> city.weather?.let { haptic.performHapticFeedback(HapticFeedbackType.LongPress); detail = key to it } },
-                                onTheme = vm::setTheme,
-                                imperial = s.imperial, onImperial = vm::setImperial,
                             )
                         }
                     }
@@ -277,6 +286,13 @@ fun App(vm: MainVm) {
                 }
             }
             if (detail != null) BackHandler { detail = null }
+            AnimatedVisibility(
+                settings,
+                enter = slideInHorizontally(spring(dampingRatio = 0.9f, stiffness = 500f)) { it / 3 } + fadeIn(tween(220)),
+                exit = slideOutHorizontally(tween(220)) { it / 3 } + fadeOut(tween(180)),
+            ) {
+                SettingsScreen(vm, s, w, onBack = { settings = false })
+            }
             AnimatedVisibility(
                 searching,
                 enter = fadeIn(tween(250)) + slideInVertically(tween(300)) { it / 10 },
@@ -321,22 +337,21 @@ private fun Toast(text: String, modifier: Modifier, onDone: () -> Unit) {
 
 /** Staggered fade-up on first appearance. */
 @Composable
-private fun Modifier.reveal(i: Int): Modifier {
+internal fun Modifier.reveal(i: Int): Modifier {
     val p = remember { Animatable(0f) }
     LaunchedEffect(Unit) { delay(i * 60L); p.animateTo(1f, tween(700, easing = FastOutSlowInEasing)) }
     return graphicsLayer { alpha = p.value; translationY = (1 - p.value) * 40f }
 }
 
 @Composable
-private fun Label(text: String, modifier: Modifier = Modifier) {
+internal fun Label(text: String, modifier: Modifier = Modifier) {
     Text(text.uppercase(), color = LocalPal.current.accent.copy(alpha = 0.78f), fontSize = 10.5.sp, letterSpacing = 1.6.sp, modifier = modifier)
 }
 
 @Composable
 private fun CityPage(
-    city: City, page: Int, count: Int, theme: Theme,
-    onSearch: () -> Unit, onRetry: () -> Unit, onHold: (String) -> Unit, onTheme: (Theme) -> Unit,
-    imperial: Boolean, onImperial: (Boolean) -> Unit,
+    city: City, page: Int, count: Int, theme: Theme, hidden: Set<Section>,
+    onSearch: () -> Unit, onSettings: () -> Unit, onRetry: () -> Unit, onHold: (String) -> Unit,
 ) {
     val w = city.weather
     LazyColumn(
@@ -347,10 +362,11 @@ private fun CityPage(
         item {
             Row(Modifier.fillMaxWidth().systemBarsPadding().padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                 Row(Modifier.weight(1f).reveal(0), verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text(city.place.name, color = Ink, fontSize = 17.sp, fontWeight = FontWeight.Medium)
+                    Text(city.place.name, color = Ink, fontSize = 16.sp, fontWeight = FontWeight.Medium)
                     if (city.place.detail.isNotEmpty()) Text(city.place.detail.substringBefore(","), color = Dim, fontSize = 12.sp, modifier = Modifier.padding(bottom = 2.dp))
                 }
                 if (count > 1) Dots(count, page)
+                IconButton(onClick = onSettings) { Icon(Icons.Outlined.Settings, "Settings", tint = Ink, modifier = Modifier.size(21.dp)) }
                 IconButton(onClick = onSearch) { Icon(Icons.Default.Search, "Search and manage cities", tint = Ink) }
             }
         }
@@ -358,30 +374,36 @@ private fun CityPage(
             item { PageEmpty(city, onRetry) }
             return@LazyColumn
         }
-        item { Hero(w, city.error) }
-        item { Card(4) { Label("Next 2 hours", Modifier.padding(start = 16.dp, bottom = 10.dp)); NowCast(w) } }
+        item { Hero(w, city.error, Section.YESTERDAY !in hidden) }
+        if (Section.NEXT2H !in hidden) item { Card(4) { Label("Next 2 hours", Modifier.padding(start = 16.dp, bottom = 10.dp)); NowCast(w) } }
         item { Card(5) { Label("Next 24 hours", Modifier.padding(start = 16.dp, bottom = 10.dp)); HourlyGraph(w.hours) } }
-        item {
+        if (Section.AIR !in hidden || Section.COMFORT !in hidden || Section.EXTRA !in hidden) item {
             Column(Modifier.reveal(6), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                if (Section.AIR !in hidden) Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     HoldTile("aqi", "Air quality", w.aqi?.toString() ?: "—", w.aqi?.let { bandOf(AQI, it).name }, AQI, w.aqi, Modifier.weight(1f), onHold)
                     HoldTile("uv", "UV index", w.uv?.toString() ?: "—", w.uv?.let { bandOf(UVB, it).name }, UVB, w.uv, Modifier.weight(1f), onHold)
                 }
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                if (Section.COMFORT !in hidden) Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     HoldTile("hum", "Humidity", "${w.humidity}%", bandOf(HUM, w.humidity).name, HUM, w.humidity, Modifier.weight(1f), onHold)
                     HoldTile(
                         "wind", "Wind", "${w.wind} ${w.windUnit}",
                         bandOf(WINDB, w.windKmh).name + (w.windDir?.let { " · " + compass(it) } ?: ""), WINDB, w.windKmh, Modifier.weight(1f), onHold,
                     )
                 }
-                Text("Hold a tile for the full scale", color = Ink.copy(alpha = 0.3f), fontSize = 10.5.sp, modifier = Modifier.align(Alignment.CenterHorizontally))
+                if (Section.EXTRA !in hidden) Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    PlainTile(
+                        "Pressure", w.pressure?.let { "$it hPa" } ?: "—", Modifier.weight(1f),
+                        w.pressureTrend?.let { d -> when { d >= 2 -> "Rising · ${"%+d".format(d)} in 3 h"; d <= -2 -> "Falling · $d in 3 h"; else -> "Steady" } },
+                    )
+                    PlainTile("Visibility", w.visibility ?: "—", Modifier.weight(1f), w.visibility?.let { "Clear view" }.takeIf { w.kind != Kind.FOG } ?: "Reduced")
+                }
+                if (Section.AIR !in hidden || Section.COMFORT !in hidden)
+                    Text("Hold a tile for the full scale", color = Ink.copy(alpha = 0.3f), fontSize = 10.5.sp, modifier = Modifier.align(Alignment.CenterHorizontally))
             }
         }
         item { Card(7) { Label("7 days", Modifier.padding(start = 16.dp, bottom = 6.dp)); Daily(w.days) } }
-        item { Card(8) { RadarCard(city.place, w, LocalPal.current, theme) { Label("Rain radar") } } }
-        item { Card(9) { Label("Sun & moon", Modifier.padding(start = 16.dp, bottom = 10.dp)); SunMoon(w) } }
-        item { Card(10) { Label("Settings", Modifier.padding(start = 16.dp, bottom = 6.dp)); Settings(theme, onTheme, imperial, onImperial) } }
-        item { Card(11) { Label("Widgets", Modifier.padding(start = 16.dp, bottom = 6.dp)); WidgetGallery(w) } }
+        if (Section.RADAR !in hidden) item { Card(8) { RadarCard(city.place, w, LocalPal.current, theme) { Label("Rain radar") } } }
+        if (Section.SUN !in hidden) item { Card(9) { Label("Sun & moon", Modifier.padding(start = 16.dp, bottom = 10.dp)); SunMoon(w) } }
         item {
             Text(
                 "Source · ${w.source}  ·  backups: " + listOf("Open-Meteo", "MET Norway", "wttr.in").filter { it != w.source }.joinToString(", "),
@@ -392,39 +414,45 @@ private fun CityPage(
 }
 
 @Composable
-private fun Card(i: Int, body: @Composable () -> Unit) {
+internal fun Card(i: Int, body: @Composable () -> Unit) {
     Column(Modifier.reveal(i).fillMaxWidth().surface().padding(vertical = 14.dp)) { body() }
 }
 
 @Composable
-private fun Hero(w: Weather, error: String?) {
+private fun Hero(w: Weather, error: String?, showYesterday: Boolean) {
     val pal = LocalPal.current
     val temp = remember { Animatable(0f) }
     LaunchedEffect(w.temp) { temp.animateTo(w.temp.toFloat(), tween(1300, easing = FastOutSlowInEasing)) }
     val now by produceState(System.currentTimeMillis()) { while (true) { delay(30_000); value = System.currentTimeMillis() } }
     val mins = ((now - w.fetchedAt) / 60_000).coerceAtLeast(0)
     val ago = if (mins < 1) "just now" else if (mins < 60) "$mins min ago" else "${mins / 60} h ago"
-    Row(Modifier.fillMaxWidth().padding(top = 56.dp, bottom = 4.dp), verticalAlignment = Alignment.Bottom) {
+    Row(Modifier.fillMaxWidth().padding(top = 18.dp, bottom = 4.dp), verticalAlignment = Alignment.Bottom) {
         Column(Modifier.weight(1f)) {
             Text(
-                "${temp.value.roundToInt()}°", fontSize = 96.sp, fontWeight = FontWeight.Thin, lineHeight = 92.sp,
-                style = TextStyle(brush = Brush.verticalGradient(listOf(Color.White, pal.accent))),
+                "${temp.value.roundToInt()}°", fontSize = 92.sp, fontWeight = FontWeight.Thin, lineHeight = 84.sp, letterSpacing = (-4).sp,
+                style = TextStyle(brush = if (LocalTheme.current == Theme.MIDNIGHT) Brush.verticalGradient(0f to Color.White, 0.35f to Color.White, 1f to pal.accent) else Brush.verticalGradient(listOf(Color.White, pal.accent))),
                 modifier = Modifier.reveal(1),
             )
             Text(labelOf(w.code), color = Ink, fontSize = 21.sp, fontWeight = FontWeight.Light, modifier = Modifier.reveal(2))
             Text("H ${w.hi}°   L ${w.lo}°   Feels ${w.feels}°", color = Dim, fontSize = 13.sp, modifier = Modifier.padding(top = 3.dp).reveal(2))
-            w.vsYesterday?.let { d ->
+            if (showYesterday) w.vsYesterday?.let { d ->
                 Text(
                     when { d > 0 -> "$d° warmer than yesterday"; d < 0 -> "${-d}° cooler than yesterday"; else -> "Same as yesterday" },
                     color = pal.accent, fontSize = 12.5.sp, modifier = Modifier.padding(top = 6.dp).reveal(2),
                 )
             }
         }
-        Text(
-            if (error != null) "Offline\nsaved $ago" else "Updated\n$ago",
-            color = Ink.copy(alpha = 0.32f), fontSize = 11.sp, lineHeight = 16.sp,
-            textAlign = androidx.compose.ui.text.style.TextAlign.End, modifier = Modifier.reveal(3),
-        )
+        Column(horizontalAlignment = Alignment.End, modifier = Modifier.reveal(3)) {
+            if (error != null) Text(
+                "OFFLINE", color = pal.accent, fontSize = 9.sp, letterSpacing = 1.2.sp,
+                modifier = Modifier.padding(bottom = 4.dp).border(1.dp, pal.accent.copy(alpha = 0.4f), RoundedCornerShape(6.dp)).padding(horizontal = 6.dp, vertical = 2.dp),
+            )
+            Text(
+                if (error != null) "Saved\n$ago" else "Updated\n$ago",
+                color = Ink.copy(alpha = 0.32f), fontSize = 11.sp, lineHeight = 16.sp,
+                textAlign = androidx.compose.ui.text.style.TextAlign.End,
+            )
+        }
     }
 }
 
@@ -563,10 +591,11 @@ private fun HoldTile(key: String, label: String, value: String, note: String?, s
 }
 
 @Composable
-private fun PlainTile(label: String, value: String, modifier: Modifier) {
+private fun PlainTile(label: String, value: String, modifier: Modifier, note: String? = null) {
     Column(modifier.surface(20.dp).padding(14.dp)) {
         Label(label)
         Text(value, color = Ink, fontSize = 23.sp, fontWeight = FontWeight.Light, modifier = Modifier.padding(top = 4.dp))
+        if (note != null) Text(note, color = Dim, fontSize = 12.sp)
     }
 }
 
@@ -580,9 +609,10 @@ private fun DetailCard(key: String, w: Weather) {
         "uv" -> Spec("UV index", UVB, w.uv ?: 0, "${w.uv ?: "—"}", listOf("0", "3", "6", "8", "11+"),
             if (w.uvPeak != null && w.uvPeakAt != null) "Peak today: ${w.uvPeak} at ${w.uvPeakAt}" else "")
         "hum" -> Spec("Humidity", HUM, w.humidity, "${w.humidity}%", listOf("0%", "30%", "60%", "80%", "100%"),
-            "Dew point ${w.dew}° · feels muggy above ${if (w.imperial) 68 else 20}°", "%")
+            "Dew point ${w.dew}° · feels like ${w.feels}°: humidity ${"%+d".format(w.feelsHumid)}°, wind ${"%+d".format(w.feelsWind)}°", "%")
         else -> Spec("Wind", WINDB, w.windKmh, "${w.wind} ${w.windUnit}", listOf("0", "6", "20", "39", "62+ km/h"),
-            listOfNotNull(w.windDir?.let { "From the ${compassLong(it)}" }, w.gust?.let { "gusts $it ${w.windUnit}" }).joinToString(" · "))
+            listOfNotNull(w.windDir?.let { "From the ${compassLong(it)}" }, w.gust?.let { "gusts $it ${w.windUnit}" }).joinToString(" · ") +
+                "\nLive: the dial turns with your phone, so the arrow shows where the wind really goes.")
     }
     val band = bandOf(spec.bands, spec.v)
     Column(
@@ -629,121 +659,71 @@ private fun DetailCard(key: String, w: Weather) {
 
 private fun compassLong(deg: Int) = listOf("north", "north-east", "east", "south-east", "south", "south-west", "west", "north-west")[((deg % 360 + 22) / 45) % 8]
 
+/** Phone heading in degrees from the rotation sensor; only listens while the composable is on screen. */
+@Composable
+private fun rememberHeading(): Float? {
+    val ctx = LocalContext.current
+    var heading by remember { mutableStateOf<Float?>(null) }
+    androidx.compose.runtime.DisposableEffect(Unit) {
+        val sm = ctx.getSystemService(android.hardware.SensorManager::class.java)
+        val sensor = sm.getDefaultSensor(android.hardware.Sensor.TYPE_ROTATION_VECTOR)
+        val rot = FloatArray(9); val o = FloatArray(3)
+        val l = object : android.hardware.SensorEventListener {
+            override fun onSensorChanged(e: android.hardware.SensorEvent) {
+                android.hardware.SensorManager.getRotationMatrixFromVector(rot, e.values)
+                android.hardware.SensorManager.getOrientation(rot, o)
+                heading = ((Math.toDegrees(o[0].toDouble()) + 360) % 360).toFloat()
+            }
+            override fun onAccuracyChanged(s: android.hardware.Sensor?, a: Int) {}
+        }
+        if (sensor != null) sm.registerListener(l, sensor, android.hardware.SensorManager.SENSOR_DELAY_UI)
+        onDispose { sm.unregisterListener(l) }
+    }
+    return heading
+}
+
+/**
+ * Live compass: the dial turns with the phone (so N points at real north) and the arrow shows where the wind
+ * blows toward. Without a compass sensor it stays north-up.
+ */
 @Composable
 private fun Compass(deg: Int) {
     val pal = LocalPal.current
     val measurer = rememberTextMeasurer()
-    Canvas(Modifier.size(66.dp)) {
+    val heading = rememberHeading()
+    // follow the shortest way round, with a little spring, so the dial never spins the long way
+    var target by remember { mutableStateOf(0f) }
+    LaunchedEffect(heading) { heading?.let { h -> val cur = target; var d = (-h - cur) % 360f; if (d > 180) d -= 360; if (d < -180) d += 360; target = cur + d } }
+    val dial by androidx.compose.animation.core.animateFloatAsState(target, spring(dampingRatio = 0.75f, stiffness = 120f), label = "dial")
+    val style = TextStyle(color = Ink, fontSize = 8.sp, fontFamily = Inter)
+    Canvas(Modifier.size(76.dp)) {
         val c = center; val r = size.minDimension / 2 - 2.dp.toPx()
+        drawCircle(Color.White.copy(alpha = 0.03f), r, c)
         drawCircle(Color.White.copy(alpha = 0.18f), r, c, style = Stroke(1.dp.toPx()))
-        repeat(4) { i ->
-            val a = Math.toRadians(i * 90.0 - 90)
-            val o = Offset(c.x + (r * kotlin.math.cos(a)).toFloat(), c.y + (r * kotlin.math.sin(a)).toFloat())
-            val inner = Offset(c.x + ((r - 4.dp.toPx()) * kotlin.math.cos(a)).toFloat(), c.y + ((r - 4.dp.toPx()) * kotlin.math.sin(a)).toFloat())
-            drawLine(Color.White.copy(alpha = 0.4f), o, inner, 1.dp.toPx())
-        }
-        val n = measurer.measure("N", TextStyle(color = Ink, fontSize = 8.sp, fontFamily = Inter))
-        drawText(n, topLeft = Offset(c.x - n.size.width / 2f, c.y - r + 6.dp.toPx()))
-        // the wind comes FROM deg; the arrow points where it blows to, like the preview
-        rotate(deg.toFloat(), c) {
-            val s = r / 30f
-            drawPath(Path().apply {
-                moveTo(c.x, c.y - 21 * s); lineTo(c.x + 6 * s, c.y + 2 * s); lineTo(c.x, c.y - 2 * s); lineTo(c.x - 6 * s, c.y + 2 * s); close()
-            }, pal.accent)
-        }
-    }
-}
-
-@Composable
-private fun Settings(theme: Theme, onTheme: (Theme) -> Unit, imperial: Boolean, onImperial: (Boolean) -> Unit) {
-    val pal = LocalPal.current
-    val haptic = LocalHapticFeedback.current
-    Column(Modifier.padding(horizontal = 16.dp)) {
-        Text("Theme", color = Ink, fontSize = 15.sp, modifier = Modifier.padding(top = 4.dp, bottom = 8.dp))
-        Row(
-            Modifier.fillMaxWidth().background(Color.White.copy(alpha = 0.05f), RoundedCornerShape(14.dp)).padding(4.dp),
-            horizontalArrangement = Arrangement.spacedBy(4.dp),
-        ) {
-            Theme.entries.forEach { t ->
-                val on = t == theme
-                Column(
-                    Modifier.weight(1f).background(if (on) pal.accent else Color.Transparent, RoundedCornerShape(11.dp))
-                        .clickable { haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove); onTheme(t) }
-                        .padding(vertical = 9.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                ) {
-                    Text(t.label, color = if (on) Color.Black else Ink, fontSize = 14.sp, fontWeight = if (on) FontWeight.Medium else FontWeight.Normal)
-                    Text(t.blurb, color = if (on) Color.Black.copy(alpha = 0.6f) else Dim, fontSize = 10.5.sp)
+        rotate(dial, c) {
+            repeat(36) { i ->
+                val major = i % 9 == 0
+                val a = Math.toRadians(i * 10.0 - 90)
+                val o = Offset(c.x + (r * kotlin.math.cos(a)).toFloat(), c.y + (r * kotlin.math.sin(a)).toFloat())
+                val len = (if (major) 6 else 3).dp.toPx()
+                val inner = Offset(c.x + ((r - len) * kotlin.math.cos(a)).toFloat(), c.y + ((r - len) * kotlin.math.sin(a)).toFloat())
+                drawLine(Color.White.copy(alpha = if (major) 0.5f else 0.18f), o, inner, 1.dp.toPx())
+            }
+            listOf("N", "E", "S", "W").forEachIndexed { i, t ->
+                rotate(i * 90f, c) {
+                    val m = measurer.measure(t, style.copy(color = if (i == 0) Ink else Ink.copy(alpha = 0.55f)))
+                    drawText(m, topLeft = Offset(c.x - m.size.width / 2f, c.y - r + 9.dp.toPx()))
                 }
             }
+            // wind comes FROM deg; the arrow points where it blows
+            rotate(deg + 180f, c) {
+                val s = r / 35f
+                drawPath(Path().apply {
+                    moveTo(c.x, c.y - 24 * s); lineTo(c.x + 5 * s, c.y + 2 * s); lineTo(c.x, c.y - 2 * s); lineTo(c.x - 5 * s, c.y + 2 * s); close()
+                }, pal.accent)
+                drawCircle(Color.Black, 2.5f * s, c); drawCircle(pal.accent, 2.5f * s, c, style = Stroke(1.dp.toPx()))
+            }
         }
-        Text("Units", color = Ink, fontSize = 15.sp, modifier = Modifier.padding(top = 14.dp, bottom = 8.dp))
-        Segmented(listOf("°C · km/h", "°F · mph"), if (imperial) 1 else 0) { onImperial(it == 1) }
-        Spacer(Modifier.height(8.dp))
-        AlertSettings()
-        HorizontalDivider(color = Hair)
-        KeepFresh()
-    }
-}
-
-@Composable
-private fun Segmented(options: List<String>, selected: Int, onPick: (Int) -> Unit) {
-    val pal = LocalPal.current
-    val haptic = LocalHapticFeedback.current
-    Row(
-        Modifier.fillMaxWidth().background(Color.White.copy(alpha = 0.05f), RoundedCornerShape(14.dp)).padding(4.dp),
-        horizontalArrangement = Arrangement.spacedBy(4.dp),
-    ) {
-        options.forEachIndexed { i, o ->
-            Text(
-                o, color = if (i == selected) Color.Black else Ink, fontSize = 13.sp, textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-                modifier = Modifier.weight(1f).background(if (i == selected) pal.accent else Color.Transparent, RoundedCornerShape(11.dp))
-                    .clickable { haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove); onPick(i) }.padding(vertical = 9.dp),
-            )
-        }
-    }
-}
-
-/** Xiaomi stops background apps; this sends the user straight to the two switches that keep widgets updating. */
-@Composable
-private fun KeepFresh() {
-    val ctx = LocalContext.current
-    val pal = LocalPal.current
-    val pm = ctx.getSystemService(android.os.PowerManager::class.java)
-    var exempt by remember { mutableStateOf(pm.isIgnoringBatteryOptimizations(ctx.packageName)) }
-    val lifecycle = androidx.lifecycle.compose.LocalLifecycleOwner.current
-    androidx.compose.runtime.DisposableEffect(lifecycle) {
-        val o = androidx.lifecycle.LifecycleEventObserver { _, e -> if (e == androidx.lifecycle.Lifecycle.Event.ON_RESUME) exempt = pm.isIgnoringBatteryOptimizations(ctx.packageName) }
-        lifecycle.lifecycle.addObserver(o)
-        onDispose { lifecycle.lifecycle.removeObserver(o) }
-    }
-    fun open(vararg intents: android.content.Intent) {
-        for (i in intents) if (runCatching { ctx.startActivity(i.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)) }.isSuccess) return
-    }
-    val pkg = android.net.Uri.parse("package:" + ctx.packageName)
-    val details = android.content.Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS, pkg)
-    Text("Keep widgets fresh", color = Ink, fontSize = 15.sp, modifier = Modifier.padding(top = 12.dp))
-    Text("Xiaomi pauses background apps. These two switches keep widgets and alerts updating.", color = Dim, fontSize = 12.sp, lineHeight = 16.sp)
-    Row(Modifier.fillMaxWidth().padding(top = 10.dp, bottom = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text(
-            "Autostart ›", color = pal.accent, fontSize = 13.sp, textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-            modifier = Modifier.weight(1f).border(1.dp, pal.accent.copy(alpha = 0.35f), RoundedCornerShape(12.dp))
-                .clickable {
-                    open(
-                        android.content.Intent().setComponent(android.content.ComponentName("com.miui.securitycenter", "com.miui.permcenter.autostart.AutoStartManagementActivity")),
-                        details,
-                    )
-                }.padding(vertical = 10.dp),
-        )
-        Text(
-            if (exempt) "Battery ✓" else "Battery: no limits ›", color = if (exempt) Dim else pal.accent, fontSize = 13.sp,
-            textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-            modifier = Modifier.weight(1f).border(1.dp, (if (exempt) Faint else pal.accent.copy(alpha = 0.35f)), RoundedCornerShape(12.dp))
-                .clickable(enabled = !exempt) {
-                    @Suppress("BatteryLife")
-                    open(android.content.Intent(android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, pkg), details)
-                }.padding(vertical = 10.dp),
-        )
     }
 }
 
@@ -800,45 +780,6 @@ private fun SunMoon(w: Weather) {
                 Text(v, color = Ink, fontSize = 15.sp, fontWeight = FontWeight.Light, modifier = Modifier.padding(top = 2.dp))
             }
         }
-    }
-}
-
-@Composable
-private fun AlertSettings() {
-    val ctx = LocalContext.current
-    var rain by remember { mutableStateOf(Alerts.rainOn(ctx)) }
-    var morning by remember { mutableStateOf(Alerts.morningOn(ctx)) }
-    var pending by remember { mutableStateOf<(() -> Unit)?>(null) }
-    val notifPerm = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { ok -> if (ok) pending?.invoke(); pending = null }
-    fun enable(apply: () -> Unit) {
-        if (Build.VERSION.SDK_INT >= 33 && ctx.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
-            pending = apply; notifPerm.launch(Manifest.permission.POST_NOTIFICATIONS)
-        } else apply()
-    }
-    ToggleRow("Rain soon", "Heads-up when rain is likely in the next 2 hours", rain) { on ->
-        if (on) enable { rain = true; Alerts.setRain(ctx, true) } else { rain = false; Alerts.setRain(ctx, false) }
-    }
-    HorizontalDivider(color = Hair)
-    ToggleRow("Morning summary", "Today's forecast between 6 and 9 am", morning) { on ->
-        if (on) enable { morning = true; Alerts.setMorning(ctx, true) } else { morning = false; Alerts.setMorning(ctx, false) }
-    }
-}
-
-@Composable
-private fun ToggleRow(title: String, sub: String, on: Boolean, onChange: (Boolean) -> Unit) {
-    val pal = LocalPal.current
-    Row(Modifier.fillMaxWidth().padding(vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-        Column(Modifier.weight(1f)) {
-            Text(title, color = Ink, fontSize = 15.sp)
-            Text(sub, color = Dim, fontSize = 12.sp)
-        }
-        Switch(
-            on, onChange,
-            colors = SwitchDefaults.colors(
-                checkedThumbColor = Color.Black, checkedTrackColor = pal.accent,
-                uncheckedThumbColor = Dim, uncheckedTrackColor = Color.Transparent, uncheckedBorderColor = Faint,
-            ),
-        )
     }
 }
 
@@ -1044,44 +985,8 @@ private fun MenuItem(text: String, dim: Boolean = false, onClick: () -> Unit) {
     )
 }
 
-/** Live previews of the 8 home-screen widgets, rendered from the same RemoteViews the launcher gets, with one-tap Add. */
-@Composable
-private fun WidgetGallery(w: Weather) {
-    val ctx = LocalContext.current
-    val pal = LocalPal.current
-    val names = mapOf(Design.TYPE to "Type", Design.HORIZON to "Horizon", Design.ORBIT to "Orbit", Design.PULSE to "Pulse")
-    val wDp = (androidx.compose.ui.platform.LocalConfiguration.current.screenWidthDp - 64)
-    Text("Type and Horizon follow Minimalist colours, Orbit and Pulse follow Midnight. Each comes dark or frosted glass.",
-        color = Dim, fontSize = 12.sp, lineHeight = 16.sp, modifier = Modifier.padding(horizontal = 16.dp))
-    Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-        Widget.all.forEach { (cls, spec) ->
-            val (design, glass) = spec
-            Column {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("${names[design]} · ${if (glass) "glass" else "dark"}", color = Ink, fontSize = 13.5.sp, modifier = Modifier.weight(1f))
-                    Text(
-                        "Add", color = pal.accent, fontSize = 13.sp,
-                        modifier = Modifier.border(1.dp, pal.accent.copy(alpha = 0.4f), RoundedCornerShape(50))
-                            .clickable { ctx.getSystemService(android.appwidget.AppWidgetManager::class.java).requestPinAppWidget(android.content.ComponentName(ctx, cls), null, null) }
-                            .padding(horizontal = 14.dp, vertical = 5.dp),
-                    )
-                }
-                // glass needs something behind it to read as glass, so preview it over a soft wallpaper-like gradient
-                Box(
-                    Modifier.padding(top = 8.dp).fillMaxWidth().height(96.dp)
-                        .background(Brush.linearGradient(listOf(Color(0xFF2B3A2F), Color(0xFF4A3D2A), Color(0xFF22303F))), RoundedCornerShape(18.dp))
-                        .padding(8.dp)
-                ) {
-                    androidx.compose.ui.viewinterop.AndroidView(
-                        factory = { c -> android.widget.FrameLayout(c) },
-                        update = { f ->
-                            f.removeAllViews()
-                            f.addView(WidgetRenderer.views(f.context, design, glass, wDp - 16, 80).apply(f.context, f))
-                        },
-                        modifier = Modifier.fillMaxSize(),
-                    )
-                }
-            }
-        }
-    }
+
+/** Used when the user turns haptics off. */
+private object NoHaptics : androidx.compose.ui.hapticfeedback.HapticFeedback {
+    override fun performHapticFeedback(hapticFeedbackType: HapticFeedbackType) {}
 }

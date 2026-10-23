@@ -11,6 +11,7 @@
         <ImageView android:id="@+id/w_f6" android:layout_width="match_parent" android:layout_height="match_parent" android:scaleType="fitXY" />
         <ImageView android:id="@+id/w_f7" android:layout_width="match_parent" android:layout_height="match_parent" android:scaleType="fitXY" />
     </ViewFlipper>
+    <FrameLayout android:id="@+id/w_rc" android:layout_width="match_parent" android:layout_height="match_parent" />
 
     <LinearLayout android:layout_width="match_parent" android:layout_height="match_parent" android:orientation="horizontal" android:gravity="center_vertical" android:paddingStart="16dp" android:paddingEnd="16dp" android:paddingTop="8dp" android:paddingBottom="8dp">
         <LinearLayout android:layout_width="76dp" android:layout_height="wrap_content" android:orientation="vertical">

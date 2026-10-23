@@ -32,7 +32,8 @@ import kotlin.math.sin
  * Colour grade per condition: near-monochrome, with a faint tint that carries the mood.
  * [top]/[bottom] are the sky gradient, [light] tints the sun/moon/particles, [accent] the UI.
  */
-data class Palette(val top: Color, val bottom: Color, val light: Color, val accent: Color)
+/** [glow2] is Midnight's faint second light (top-left); unused in Minimalist. */
+data class Palette(val top: Color, val bottom: Color, val light: Color, val accent: Color, val glow2: Color = Color.Transparent)
 
 val Ink = Color(0xFFF4F1EC)
 
@@ -46,18 +47,21 @@ enum class Theme(val label: String, val blurb: String) {
  * Here [Palette.top] is the glow colour.
  */
 fun midnightPaletteOf(kind: Kind, isDay: Boolean): Palette {
-    val (acc, glow) = when (kind) {
-        Kind.CLEAR -> if (isDay) Color(0xFFFFD79A) to Color(0xFFFFBE6E) else Color(0xFFC9D7FF) to Color(0xFF788CFF)
-        Kind.PARTLY -> Color(0xFFF2DDB8) to Color(0xFFE6BE8C)
-        Kind.CLOUDY -> Color(0xFFD9DEE6) to Color(0xFF96A0AF)
-        Kind.FOG -> Color(0xFFE8E2D6) to Color(0xFFC8BEAA)
-        Kind.RAIN -> Color(0xFF9EC3FF) to Color(0xFF5082DC)
-        Kind.SNOW -> Color(0xFFD8F1FF) to Color(0xFF96D2FF)
-        Kind.STORM -> Color(0xFFC7B8FF) to Color(0xFF825AFF)
+    // accent · main glow (top-right) · second glow (top-left), exactly as in the approved reference
+    fun c(a: Long, g: Long, g2: Long) = Triple(Color(a), Color(g), Color(g2))
+    val (acc, glow, glow2) = when (kind) {
+        Kind.CLEAR -> if (isDay) c(0xFFFFD9A0, 0xFFFFB86B, 0xFFFF7A59) else c(0xFFC9D4FF, 0xFF6F7CFF, 0xFF3FD0FF)
+        Kind.PARTLY -> c(0xFFF1DDBF, 0xFFE7B98A, 0xFF8FA8FF)
+        Kind.CLOUDY -> if (isDay) c(0xFFD3DDEC, 0xFF7C93B8, 0xFFB8C4D9) else c(0xFFC3CDEB, 0xFF5C6FB0, 0xFF2E9BB8)
+        Kind.FOG -> c(0xFFECE4D6, 0xFFBFB39C, 0xFF8C9AA8)
+        Kind.RAIN -> c(0xFFA9CBFF, 0xFF3D7BFF, 0xFF22C3E6)
+        Kind.SNOW -> c(0xFFE1F4FF, 0xFF8FD3FF, 0xFFE0F4FF)
+        Kind.STORM -> c(0xFFCBB8FF, 0xFF7B4DFF, 0xFFC04DFF)
     }
-    if (isDay || kind == Kind.CLEAR) return Palette(glow, Color.Black, acc, acc)
-    val a = lerp(acc, Color(0xFFC9D7FF), 0.35f)
-    return Palette(lerp(glow, Color(0xFF788CFF), 0.5f), Color.Black, a, a)
+    if (isDay || kind == Kind.CLEAR || kind == Kind.CLOUDY) return Palette(glow, Color.Black, acc, acc, glow2)
+    // other conditions at night lean toward the clear-night indigo and teal
+    val a = lerp(acc, Color(0xFFC9D4FF), 0.3f)
+    return Palette(lerp(glow, Color(0xFF6F7CFF), 0.45f), Color.Black, a, a, lerp(glow2, Color(0xFF3FD0FF), 0.4f))
 }
 
 fun paletteFor(theme: Theme, kind: Kind, isDay: Boolean) =
@@ -88,22 +92,30 @@ private fun rnd(i: Int, salt: Int): Float {
 
 /** Full-screen animated backdrop for the current conditions. */
 @Composable
-fun Scene(kind: Kind, isDay: Boolean, theme: Theme, modifier: Modifier = Modifier) {
+fun Scene(kind: Kind, isDay: Boolean, theme: Theme, anim: Anim = Anim.FULL, modifier: Modifier = Modifier) {
     val mid = theme == Theme.MIDNIGHT
     val pal = paletteFor(theme, kind, isDay)
-    val t by produceState(0f) {
+    // Full: every frame. Reduced: ~24 fps, slower, fewer particles. Off: one still frame (no work at all).
+    val t by produceState(3f, anim) {
+        if (anim == Anim.OFF) { value = 3f; return@produceState }
         val start = withFrameNanos { it }
-        while (true) withFrameNanos { value = (it - start) / 1e9f }
+        var last = 0L
+        while (true) withFrameNanos {
+            if (anim == Anim.FULL || it - last >= 41_000_000L) { last = it; value = (it - start) / 1e9f * (if (anim == Anim.REDUCED) 0.6f else 1f) }
+        }
     }
     Canvas(modifier.fillMaxSize()) {
         if (mid) {
             drawRect(Color.Black)
-            val c = Offset(size.width * 0.75f, size.height * 0.02f)
-            drawRect(Brush.radialGradient(0f to pal.top.copy(alpha = 0.32f), 0.5f to pal.top.copy(alpha = 0.07f), 1f to Color.Transparent, center = c, radius = size.height * 0.55f))
+            val c = Offset(size.width * 0.78f, -size.height * 0.02f)
+            drawRect(Brush.radialGradient(0f to pal.top.copy(alpha = 0.42f), 0.35f to pal.top.copy(alpha = 0.12f), 1f to Color.Transparent, center = c, radius = size.height * 0.6f))
+            val c2 = Offset(size.width * 0.05f, size.height * 0.08f)
+            drawRect(Brush.radialGradient(0f to pal.glow2.copy(alpha = 0.14f), 1f to Color.Transparent, center = c2, radius = size.height * 0.32f))
         } else drawRect(Brush.verticalGradient(listOf(pal.top, pal.bottom)))
         reach = if (mid) 0.75f else 10f
+        amount = if (anim == Anim.FULL) 1f else 0.5f
         band = if (mid) 0.2f else 0.32f
-        cloudK = if (mid) 0.45f else 1f
+        cloudK = 1f
         val l = pal.light
         when (kind) {
             Kind.CLEAR -> if (isDay) sun(t, l) else night(t, l)
@@ -123,6 +135,7 @@ fun Scene(kind: Kind, isDay: Boolean, theme: Theme, modifier: Modifier = Modifie
 private var reach = 10f
 private var band = 0.32f
 private var cloudK = 1f
+private var amount = 1f
 private fun DrawScope.fade(y: Float) = (1f - y / (size.height * reach)).coerceIn(0f, 1f)
 
 private fun DrawScope.sun(t: Float, l: Color, s: Float = 1f) {
@@ -142,7 +155,7 @@ private fun DrawScope.sun(t: Float, l: Color, s: Float = 1f) {
 }
 
 private fun DrawScope.night(t: Float, l: Color) {
-    repeat(90) { i ->
+    repeat((90 * amount).toInt()) { i ->
         val p = Offset(rnd(i, 1) * size.width, rnd(i, 2) * size.height * 0.6f)
         val tw = 0.25f + 0.55f * (0.5f + 0.5f * sin(t * (0.6f + rnd(i, 3) * 1.8f) + i))
         drawCircle(l.copy(alpha = tw * (0.4f + 0.6f * rnd(i, 4))), 1.dp.toPx() * (0.6f + rnd(i, 5)), p)
@@ -168,7 +181,7 @@ private fun cloudPath(o: Offset, w: Float) = Path().apply { op(this, cloudParts(
 
 private fun DrawScope.clouds(t: Float, l: Color, n: Int, alpha: Float) {
     repeat(n) { i ->
-        val w = size.width * (0.5f + rnd(i, 11) * 0.45f) * (if (cloudK < 1f) 0.75f else 1f)
+        val w = size.width * (0.5f + rnd(i, 11) * 0.45f)
         val y = size.height * (0.04f + rnd(i, 12) * band)
         val speed = size.width * (0.012f + rnd(i, 13) * 0.025f)
         val span = size.width + w * 2
@@ -180,7 +193,7 @@ private fun DrawScope.clouds(t: Float, l: Color, n: Int, alpha: Float) {
 private fun DrawScope.rain(t: Float, l: Color, n: Int) {
     val len = size.height * 0.035f
     val stroke = 1.3.dp.toPx()
-    repeat(n) { i ->
+    repeat((n * amount).toInt()) { i ->
         val speed = size.height * (0.9f + rnd(i, 21) * 0.7f)
         val y = ((rnd(i, 22) * size.height + t * speed) % (size.height + len)) - len
         val x = rnd(i, 23) * size.width * 1.15f - y * 0.12f
@@ -189,7 +202,7 @@ private fun DrawScope.rain(t: Float, l: Color, n: Int) {
 }
 
 private fun DrawScope.snow(t: Float, l: Color) {
-    repeat(110) { i ->
+    repeat((110 * amount).toInt()) { i ->
         val speed = size.height * (0.04f + rnd(i, 31) * 0.07f)
         val y = (rnd(i, 32) * size.height + t * speed) % size.height
         val x = rnd(i, 33) * size.width + sin(t * (0.5f + rnd(i, 34)) + i) * 14.dp.toPx()

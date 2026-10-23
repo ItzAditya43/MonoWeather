@@ -1,35 +1,56 @@
 # Mono
 
-A quiet, fast weather app for Android. Animated skies, two themes, eight home-screen widgets, and a 1.4 MB install. No account, no ads, no API keys, and no location needed.
+A quiet, fast weather app for Android. Animated skies, two themes, live home-screen widgets, and a 1.4 MB install. No account, no ads, no API keys, and no location needed.
 
 <p>
   <img src="docs/screenshots/midnight-home.jpg" width="240" alt="Midnight theme, home screen">
   <img src="docs/screenshots/minimalist-home.jpg" width="240" alt="Minimalist theme, home screen">
-  <img src="docs/screenshots/hold-card.jpg" width="240" alt="Air quality detail card">
+  <img src="docs/screenshots/wind-compass.jpg" width="240" alt="Wind card with live compass">
 </p>
 
-**[Download the latest APK](https://github.com/ItzAditya43/MonoWeather/releases/latest)** · Android 8.0 or newer
+**[Download the latest APK](https://github.com/ItzAditya43/MonoWeather/releases/latest)** · Android 8.0 or newer (live widgets need Android 16)
 
 ## Features
 
 - **Animated skies** drawn in real time: sun rays, stars and moon, drifting clouds, rain, snow, fog and lightning.
 - **Two themes**
   - *Minimalist*: soft graded skies tinted to the weather.
-  - *Midnight*: true black for AMOLED screens. Colour lives only in a glow near the top, so most pixels stay off.
+  - *Midnight*: true black for AMOLED. Two soft glows near the top carry the weather's colour; everything else stays black, so those pixels stay off.
 - **Next 2 hours**: rain in 15-minute steps, with a plain sentence such as "Light rain now, easing by 01:00".
 - **24-hour graph** and a **7-day** range view.
-- **Hold-to-expand cards** for air quality, UV, humidity and wind. Each shows the full scale, where you are on it, and what it means. Wind includes a compass, gusts and direction.
-- **Rain radar**: the last 2 hours with play/pause and a scrubber. It downloads nothing until you tap Load (about 250 KB). Hold the title to minimise it.
-- **Sun & moon**: sun path, daylight length, golden hour, moon phase and next full moon, all computed on the phone.
+- **Hold-to-expand cards** for air quality, UV, humidity and wind, each with its full scale and advice.
+  - Humidity explains "feels like" (how much humidity and wind add or take away).
+  - Wind has a **live compass**: the dial turns with your phone, so the arrow shows where the wind really goes.
+- **Pressure** with its 3-hour trend, and **visibility** (optional tiles).
+- **Rain radar**: the last 2 hours with play/pause and a scrubber. It downloads nothing until you tap Load (about 250 KB), or loads by itself on Wi-Fi if you choose. Hold the title to minimise it.
+- **Sun & moon**: sun path, daylight length, golden hour, moon phase and next full moon, computed on the phone.
 - **"2° warmer than yesterday"** under the temperature.
-- **Multiple cities**: swipe between them. Hold a city in search to set it as the widget city or remove it.
-- **Alerts** (optional): rain within 2 hours, and a morning summary.
+- **Multiple cities**: swipe between them. Hold a city in search to set it as the default or remove it.
+- **Alerts** (optional): rain within 2 hours at your chosen chance, and a morning summary at your chosen time.
 - **Quick Settings tile** with the current temperature.
-- °C/°F and km/h/mph, haptics, and offline use: the last forecast is saved and re-sliced to the current hour.
+- Works offline: the last forecast is saved and re-sliced to the current hour.
+
+<p>
+  <img src="docs/screenshots/settings.jpg" width="240" alt="Settings">
+  <img src="docs/screenshots/settings-appearance.jpg" width="240" alt="Settings, Appearance page">
+  <img src="docs/screenshots/hold-card.jpg" width="240" alt="Air quality detail card">
+</p>
+
+## Settings
+
+A list of categories, each opening its own page:
+
+- **Appearance**: theme, animations (Full, Reduced or Off to save battery), haptics.
+- **Home screen**: show or hide sections. Current weather, 24 hours and 7 days always stay.
+- **Units**: °C/°F; wind in km/h, mph, m/s or knots; 24h or 12h.
+- **Radar**: load on Wi-Fi, start minimised.
+- **Alerts**: rain threshold (40, 60 or 80%), morning summary time.
+- **Data**: preferred source, refresh interval, data used this month, clear saved forecasts, and a **background refresh log** that shows whether your phone lets Mono refresh while closed.
+- **Widgets**, **Keep widgets fresh** (Autostart and battery shortcuts), **About**.
 
 ## Widgets
 
-Eight 4×1 widgets: four designs, each in **dark** or **frosted glass**. All of them animate with a gentle particle loop for the current weather.
+Four designs, each in **dark** or **frosted glass**. The widget list shows the four that belong to your current theme.
 
 | Design | Theme | What it shows |
 |---|---|---|
@@ -38,13 +59,16 @@ Eight 4×1 widgets: four designs, each in **dark** or **frosted glass**. All of 
 | Orbit | Midnight | Today's sun path, the time, and the temperature |
 | Pulse | Midnight | Rain over the next 2 hours as glowing bars |
 
-<img src="docs/screenshots/widgets.jpg" width="300" alt="Widget previews">
+<img src="docs/screenshots/widget-home.jpg" width="420" alt="Type widget on a home screen">
 
-Add them from the home screen's widget picker, or from **Settings → Widgets** inside the app.
+- **Live animation.** On Android 16 the widgets use the new [Remote Compose](https://developer.android.com/blog/posts/remote-compose-gaming-widgets) engine: the home screen itself animates rain, snow, stars, sun glow and clouds while Mono is closed, and Orbit moves the sun along its arc by the clock. Older Android versions get a lighter frame-by-frame loop.
+- **Glass that matches your wallpaper.** Android doesn't let apps read the wallpaper, so pick the same image once in Settings → Widgets. Tap a glass widget once and Mono learns where it sits, then blurs exactly that slice behind it.
+- **A city per widget.** Choose it when adding, or long-press the widget → Reconfigure.
+- Add them by long-pressing your home screen → Widgets → Mono.
 
 ### On Xiaomi / HyperOS
 
-Xiaomi pauses background apps. In the app, go to **Settings → Keep widgets fresh** and turn on **Autostart** and **Battery: no limits**. Even without those switches, widgets stay accurate for days, because they read the current hour from the saved 8-day forecast.
+Xiaomi pauses background apps. In Settings → Keep widgets fresh, turn on **Autostart** and **Battery: no limits**. Even without them, widgets stay accurate for days: they read the current hour from the saved 8-day forecast, and the live widgets move the sun by the clock.
 
 ## Data and reliability
 
@@ -56,16 +80,17 @@ Xiaomi pauses background apps. In the app, go to **Settings → Keep widgets fre
 | Air quality | Open-Meteo Air Quality | US AQI, PM2.5, PM10 |
 | Radar | [RainViewer](https://www.rainviewer.com) on [Esri](https://www.esri.com) dark canvas | Loaded only on request |
 
-The app shows which source answered. In regions without a short-range model, "Next 2 hours" is interpolated from hourly forecasts; the radar is the real-time check.
+You can choose which source goes first in Settings → Data; the others stay as backups. The app always shows which source answered. In regions without a short-range model, "Next 2 hours" is interpolated from hourly forecasts; the radar is the real-time check.
 
 ## Privacy
 
 - Location is never required. Mono runs on cities you save. "Use my location once" asks for approximate location a single time and saves the result as a city.
+- The compass sensor is used only while the wind card is open.
 - No analytics, accounts or trackers. Requests go only to the weather and map services listed above.
 
 ## Build
 
-Requires JDK 17 or 21 and the Android SDK (API 35).
+Requires JDK 17 or 21 and the Android SDK (API 36).
 
 ```bash
 git clone https://github.com/ItzAditya43/MonoWeather.git
@@ -76,7 +101,7 @@ cd MonoWeather
 
 Release signing is read from `~/.android-keys/mono-release.properties` (`storeFile`, `storePassword`, `keyAlias`, `keyPassword`). Without it, the build falls back to the debug key.
 
-Stack: Kotlin, Jetpack Compose, WorkManager. No Google Play Services.
+Stack: Kotlin, Jetpack Compose, WorkManager, Remote Compose (widgets). No Google Play Services.
 
 ## Credits
 

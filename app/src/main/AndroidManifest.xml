@@ -50,6 +50,9 @@
             <intent-filter><action android:name="android.appwidget.action.APPWIDGET_UPDATE" /></intent-filter>
             <meta-data android:name="android.appwidget.provider" android:resource="@xml/w_pulse" />
         </receiver>
+        <activity android:name=".WidgetConfig" android:exported="true" android:theme="@style/Mono" android:label="Widget city">
+            <intent-filter><action android:name="android.appwidget.action.APPWIDGET_CONFIGURE" /></intent-filter>
+        </activity>
         <service android:name=".WeatherTile" android:exported="true" android:label="Mono weather"
             android:icon="@drawable/ic_stat" android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
             <intent-filter><action android:name="android.service.quicksettings.action.QS_TILE" /></intent-filter>
