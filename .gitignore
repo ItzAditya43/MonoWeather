@@ -1,0 +1,13 @@
+.gradle/
+.kotlin/
+build/
+app/build/
+local.properties
+.idea/
+*.iml
+captures/
+# signing keys never live in the repo
+*.jks
+*.keystore
+*.properties.local
+mono-release.properties
