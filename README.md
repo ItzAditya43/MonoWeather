@@ -16,8 +16,12 @@ A quiet, fast weather app for Android. Animated skies, two themes, live home-scr
 - **Two themes**
   - *Minimalist*: soft graded skies tinted to the weather.
   - *Midnight*: true black for AMOLED. Two soft glows near the top carry the weather's colour; everything else stays black, so those pixels stay off.
+- **Heads-up**: warnings worked out from the forecast (heavy rain, storms, heat, strong wind, poor air), what to wear, your two commute times, rain today and this week, and small facts such as "wettest day since 3 Oct".
+- **Living sky**: the background warms at dawn and golden hour and turns violet at dusk, using real sunrise and sunset times. It also leans slightly as you tilt the phone (can be turned off).
+- **Weather sounds** (off by default): soft rain, wind, storm or night ambience, generated on the phone with no audio files, only while Mono is open.
+- **Share card**: a clean image of today's weather in your theme.
 - **Next 2 hours**: rain in 15-minute steps, with a plain sentence such as "Light rain now, easing by 01:00".
-- **24-hour graph** and a **7-day** range view.
+- **24-hour graph** (tap any hour for feels-like, wind, humidity and rain amount) and a **7-day** range view with rain totals.
 - **Hold-to-expand cards** for air quality, UV, humidity and wind, each with its full scale and advice.
   - Humidity explains "feels like" (how much humidity and wind add or take away).
   - Wind has a **live compass**: the dial turns with your phone, so the arrow shows where the wind really goes.
@@ -26,7 +30,7 @@ A quiet, fast weather app for Android. Animated skies, two themes, live home-scr
 - **Sun & moon**: sun path, daylight length, golden hour, moon phase and next full moon, computed on the phone.
 - **"2° warmer than yesterday"** under the temperature.
 - **Multiple cities**: swipe between them. Hold a city in search to set it as the default or remove it.
-- **Alerts** (optional): rain within 2 hours at your chosen chance, and a morning summary at your chosen time.
+- **Notifications** (optional): a live rain countdown (Android 16 Live Update; shown in the Super Island on HyperOS 3.1 and later), commute heads-ups, warnings, and a morning summary with what to wear.
 - **Quick Settings tile** with the current temperature.
 - Works offline: the last forecast is saved and re-sliced to the current hour.
 
