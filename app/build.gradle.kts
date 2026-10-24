@@ -59,6 +59,8 @@ dependencies {
     // Remote Compose: real, launcher-side animation for widgets on Android 16+ (falls back to frame widgets below that)
     implementation("androidx.compose.remote:remote-creation-android:1.0.0-alpha22")
     implementation("androidx.compose.remote:remote-core:1.0.0-alpha22")
+    // Xiaomi Super Island (focus notification) payloads — Apache-2.0, github.com/D4vidDf/HyperIsland-ToolKit
+    implementation("io.github.d4viddf:hyperisland_kit:0.4.5")
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.json:json:20240303")
 }

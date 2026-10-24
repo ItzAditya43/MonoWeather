@@ -362,8 +362,10 @@ object WidgetRenderer {
             cv.drawCircle(dx, dy, 4 * d, dot)
         }
         val t = Paint(Paint.ANTI_ALIAS_FLAG).apply { textAlign = Paint.Align.CENTER; textSize = 8.5f * d; color = 0x66FFFFFF; typeface = regular }
-        cv.drawText(w?.sunrise ?: "", cx - r, cy + 12 * d, t)
-        cv.drawText(w?.sunset ?: "", cx + r, cy + 12 * d, t)
+        // compact times so they fit the arc: "6:11" / "17:56", or "6:11" / "5:56" in 12h
+        fun short(m: Int?) = m?.let { if (w?.units?.clock24 != false) "%02d:%02d".format(it / 60, it % 60) else "%d:%02d".format((it / 60 + 11) % 12 + 1, it % 60) } ?: ""
+        cv.drawText(short(w?.sunriseMin), cx - r, cy + 12 * d, t)
+        cv.drawText(short(w?.sunsetMin), cx + r, cy + 12 * d, t)
         return b
     }
 
@@ -563,8 +565,32 @@ object Alerts {
             runCatching { android.app.Notification.Builder::class.java.getMethod("setShortCriticalText", String::class.java).invoke(b, "$minutes min") }
             runCatching { android.app.Notification.Builder::class.java.getMethod("setRequestPromotedOngoing", Boolean::class.javaPrimitiveType).invoke(b, true) }
         }
-        nm.notify(ID_RAIN, b.build())
+        // Xiaomi Super Island: add the focus-notification payload. HyperOS shows it in the island when it lets
+        // Mono use focus notifications, and ignores it otherwise (the normal notification still appears).
+        val island = runCatching {
+            val key = "mono_rain"
+            io.github.d4viddf.hyperisland_kit.HyperIslandNotification.Builder(c, "weather", "$word in $minutes min")
+                .addPicture(io.github.d4viddf.hyperisland_kit.HyperPicture(key, c, R.drawable.ic_rain))
+                .setBaseInfo(title = "$word in $minutes min", content = "${w.place}$easing", type = 1)
+                .setProgressBar(progress = (100 - minutes * 100 / 120).coerceIn(0, 100), color = "#9EC3FF")
+                .setSmallIsland(key)
+                .setBigIslandCountdown(startAt, key)
+                .setIslandFirstFloat(true)
+        }.getOrNull()
+        if (island != null) b.addExtras(island.buildResourceBundle())
+        val n = b.build()
+        if (island != null) n.extras.putString("miui.focus.param", island.buildJsonParam())
+        Prefs.log(c, "island: focus ${if (islandAllowed(c)) "allowed" else "not allowed"} · protocol ${focusProtocol(c)}")
+        nm.notify(ID_RAIN, n)
     }
+
+    /** Whether HyperOS lets Mono use focus notifications (Super Island). */
+    fun islandAllowed(c: Context) = runCatching {
+        c.contentResolver.call(android.net.Uri.parse("content://miui.statusbar.notification.public"), "canShowFocus", null,
+            android.os.Bundle().apply { putString("package", c.packageName) })?.getBoolean("canShowFocus", false) ?: false
+    }.getOrDefault(false)
+
+    fun focusProtocol(c: Context) = runCatching { android.provider.Settings.System.getInt(c.contentResolver, "notification_focus_protocol", 0) }.getOrDefault(0)
 
     /** Settings → Notifications → "Send a test": shows exactly what this phone does with a live rain alert. */
     fun test(c: Context, w: Weather?) {
