@@ -10,6 +10,7 @@ enum class Anim(val label: String) { FULL("Full"), REDUCED("Reduced"), OFF("Off"
 
 /** Home sections that can be hidden. Current weather, 24 hours and 7 days are always shown. */
 enum class Section(val label: String, val sub: String, val default: Boolean) {
+    HEADS("Heads-up", "What to wear, commute, warnings, rain totals", true),
     NEXT2H("Next 2 hours", "Rain in 15-minute steps", true),
     AIR("Air quality & UV", "", true),
     COMFORT("Humidity & wind", "", true),
@@ -59,6 +60,20 @@ object Prefs {
     fun setSource(c: Context, v: String) = p(c).edit().putString("source", v).apply()
     fun refreshMin(c: Context) = p(c).getInt("refreshMin", 30)
     fun setRefreshMin(c: Context, v: Int) = p(c).edit().putInt("refreshMin", v).apply()
+
+    // notifications and extras
+    fun commuteOn(c: Context) = p(c).getBoolean("commute", false)
+    fun setCommuteOn(c: Context, on: Boolean) = p(c).edit().putBoolean("commute", on).apply()
+    fun commuteTimes(c: Context) = listOf(p(c).getString("c1", "9:00")!!, p(c).getString("c2", "18:00")!!)
+    fun setCommuteTime(c: Context, i: Int, v: String) = p(c).edit().putString(if (i == 0) "c1" else "c2", v).apply()
+    fun warningsOn(c: Context) = p(c).getBoolean("warnings", true)
+    fun setWarningsOn(c: Context, on: Boolean) = p(c).edit().putBoolean("warnings", on).apply()
+    fun liveOn(c: Context) = p(c).getBoolean("live", true)
+    fun setLiveOn(c: Context, on: Boolean) = p(c).edit().putBoolean("live", on).apply()
+    fun sounds(c: Context) = p(c).getBoolean("sounds", false)
+    fun setSounds(c: Context, on: Boolean) = p(c).edit().putBoolean("sounds", on).apply()
+    fun tilt(c: Context) = p(c).getBoolean("tilt", true)
+    fun setTilt(c: Context, on: Boolean) = p(c).edit().putBoolean("tilt", on).apply()
 
     // per-widget city and on-screen position (for wallpaper-matched glass)
     fun widgetCity(c: Context, id: Int) = p(c).getString("wcity_$id", null)

@@ -77,7 +77,7 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 
 private enum class Page(val title: String, val icon: String) {
     APPEARANCE("Appearance", "✦"), HOME("Home screen", "▦"), UNITS("Units", "°"),
-    RADAR("Radar", "◎"), ALERTS("Alerts", "☂"), DATA("Data", "⇄"),
+    RADAR("Radar", "◎"), ALERTS("Notifications", "☂"), DATA("Data", "⇄"),
     WIDGETS("Widgets", "▧"), FRESH("Keep widgets fresh", "⚡"), ABOUT("About", "i"),
 }
 
@@ -125,7 +125,10 @@ fun SettingsScreen(vm: MainVm, s: UiState, w: Weather?, onBack: () -> Unit) {
                             Page.HOME -> "${Section.entries.count { Prefs.shown(ctx, it) } + 3} of ${Section.entries.size + 3} shown"
                             Page.UNITS -> "${if (u.tempF) "°F" else "°C"} · ${u.wind} · ${if (u.clock24) "24h" else "12h"}"
                             Page.RADAR -> if (Prefs.radarWifi(ctx)) "Loads on Wi-Fi" else "Loads only when you tap"
-                            Page.ALERTS -> listOfNotNull("Rain soon".takeIf { Alerts.rainOn(ctx) }, "Morning".takeIf { Alerts.morningOn(ctx) }).joinToString(" · ").ifEmpty { "Off" }
+                            Page.ALERTS -> listOfNotNull(
+                                "Rain".takeIf { Alerts.rainOn(ctx) }, "Commute".takeIf { Prefs.commuteOn(ctx) },
+                                "Morning".takeIf { Alerts.morningOn(ctx) }, "Warnings".takeIf { Prefs.warningsOn(ctx) },
+                            ).joinToString(" · ").ifEmpty { "Off" }
                             Page.DATA -> "${Prefs.source(ctx)} · every ${Prefs.refreshMin(ctx).let { if (it < 60) "$it min" else "${it / 60} h" }}"
                             Page.WIDGETS -> if (s.theme == Theme.MIDNIGHT) "Orbit and Pulse · dark or glass" else "Type and Horizon · dark or glass"
                             Page.FRESH -> "Autostart and battery"
@@ -158,6 +161,10 @@ fun SettingsScreen(vm: MainVm, s: UiState, w: Weather?, onBack: () -> Unit) {
                                 }
                                 Divider()
                                 Item("◉", "Haptics", "Light ticks on swipe, refresh and hold") { Toggle(Prefs.haptics(ctx)) { v -> apply { Prefs.setHaptics(ctx, v) } } }
+                                Divider()
+                                Item("∿", "Tilt effect", "The sky shifts gently as you tilt the phone") { Toggle(Prefs.tilt(ctx)) { v -> apply { Prefs.setTilt(ctx, v) } } }
+                                Divider()
+                                Item("♫", "Weather sounds", "Soft rain, wind or night ambience while Mono is open") { Toggle(Prefs.sounds(ctx)) { v -> apply { Prefs.setSounds(ctx, v) } } }
                             }
                             Page.HOME -> Group("") {
                                 listOf("°" to "Current weather", "≋" to "Next 24 hours", "▤" to "7 days").forEach { (ic, t) ->
@@ -165,7 +172,7 @@ fun SettingsScreen(vm: MainVm, s: UiState, w: Weather?, onBack: () -> Unit) {
                                     Divider()
                                 }
                                 Section.entries.forEachIndexed { i, sec ->
-                                    val icon = when (sec) { Section.NEXT2H -> "☂"; Section.AIR -> "◌"; Section.COMFORT -> "〰"; Section.EXTRA -> "▥"; Section.RADAR -> "◎"; Section.SUN -> "☾"; Section.YESTERDAY -> "±" }
+                                    val icon = when (sec) { Section.HEADS -> "!"; Section.NEXT2H -> "☂"; Section.AIR -> "◌"; Section.COMFORT -> "〰"; Section.EXTRA -> "▥"; Section.RADAR -> "◎"; Section.SUN -> "☾"; Section.YESTERDAY -> "±" }
                                     Item(icon, sec.label, sec.sub.ifEmpty { null }) { Toggle(Prefs.shown(ctx, sec)) { v -> apply { Prefs.setShown(ctx, sec, v) } } }
                                     if (i < Section.entries.lastIndex) Divider()
                                 }
@@ -186,7 +193,7 @@ fun SettingsScreen(vm: MainVm, s: UiState, w: Weather?, onBack: () -> Unit) {
                                 Divider()
                                 Item("▁", "Start minimised", null) { Toggle(Prefs.radarMin(ctx)) { v -> apply { Prefs.setRadarMin(ctx, v) } } }
                             }
-                            Page.ALERTS -> AlertsGroup(::apply)
+                            Page.ALERTS -> AlertsGroup(::apply, w)
                             Page.DATA -> DataGroup(vm, ::apply)
                             Page.WIDGETS -> WidgetsGroup(s.theme)
                             Page.FRESH -> FreshGroup()
@@ -330,8 +337,9 @@ private fun ThemeCard(t: Theme, on: Boolean, w: Weather?, modifier: Modifier, on
 // ---------- groups with their own logic ----------
 
 @Composable
-private fun AlertsGroup(apply: (() -> Unit) -> Unit) {
+private fun AlertsGroup(apply: (() -> Unit) -> Unit, w: Weather?) {
     val ctx = LocalContext.current
+    val pal = LocalPal.current
     var pending by remember { mutableStateOf<(() -> Unit)?>(null) }
     val notifPerm = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { ok -> if (ok) pending?.invoke(); pending = null }
     fun enable(f: () -> Unit) {
@@ -340,7 +348,11 @@ private fun AlertsGroup(apply: (() -> Unit) -> Unit) {
         } else f()
     }
     Group("") {
-        Item("☂", "Rain soon", "Heads-up when rain is likely within 2 hours") {
+        Item("◉", "Live Updates & Super Island", "Rain countdown as a live chip (island on HyperOS 3.1+)") {
+            Toggle(Prefs.liveOn(ctx)) { v -> apply { Prefs.setLiveOn(ctx, v) } }
+        }
+        Divider()
+        Item("☂", "Rain soon", "When rain is likely within 2 hours") {
             Toggle(Alerts.rainOn(ctx)) { v -> if (v) enable { Alerts.setRain(ctx, true) } else Alerts.setRain(ctx, false) }
         }
         Divider()
@@ -349,13 +361,35 @@ private fun AlertsGroup(apply: (() -> Unit) -> Unit) {
             Chips(pcts.map { "$it%" }, pcts.indexOf(Prefs.rainPct(ctx)).coerceAtLeast(1)) { i -> apply { Prefs.setRainPct(ctx, pcts[i]) } }
         }
         Divider()
-        Item("☼", "Morning summary", null) {
+        Item("⇄", "Commute", "A heads-up 30 min before each time if it'll be wet") {
+            Toggle(Prefs.commuteOn(ctx)) { v -> if (v) enable { Prefs.setCommuteOn(ctx, true) } else Prefs.setCommuteOn(ctx, false) }
+        }
+        Divider()
+        val ct = Prefs.commuteTimes(ctx)
+        Item("◷", "Commute times", "Also shown in Heads-up", below = true) {
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                val morning = listOf("7:00", "8:00", "9:00", "10:00")
+                val evening = listOf("16:00", "17:00", "18:00", "19:00")
+                Chips(morning, morning.indexOf(ct[0]).coerceAtLeast(0)) { i -> apply { Prefs.setCommuteTime(ctx, 0, morning[i]) } }
+                Chips(evening, evening.indexOf(ct[1]).coerceAtLeast(0)) { i -> apply { Prefs.setCommuteTime(ctx, 1, evening[i]) } }
+            }
+        }
+        Divider()
+        Item("☼", "Morning summary", "Includes what to wear") {
             Toggle(Alerts.morningOn(ctx)) { v -> if (v) enable { Alerts.setMorning(ctx, true) } else Alerts.setMorning(ctx, false) }
         }
         Divider()
         val hours = listOf(6, 7, 8)
         Item("◷", "Summary time", null) {
             Chips(hours.map { "$it:00" }, hours.indexOf(Prefs.morningHour(ctx)).coerceAtLeast(1)) { i -> apply { Prefs.setMorningHour(ctx, hours[i]) } }
+        }
+        Divider()
+        Item("!", "Weather warnings", "Heavy rain, storms, heat, strong wind, very poor air (from the forecast)") {
+            Toggle(Prefs.warningsOn(ctx)) { v -> if (v) enable { Prefs.setWarningsOn(ctx, true) } else Prefs.setWarningsOn(ctx, false) }
+        }
+        Divider()
+        Item("▶", "Send a test", "See how a rain countdown looks on this phone", onClick = { enable { Alerts.test(ctx, w) } }) {
+            Text("Send", color = pal.accent, fontSize = 13.sp)
         }
     }
 }

@@ -85,6 +85,7 @@ import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.blur
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
@@ -247,7 +248,15 @@ fun App(vm: MainVm) {
     ) {
         Box(Modifier.fillMaxSize().background(Color.Black)) {
             Box(Modifier.fillMaxSize().blur(if (detail != null) 18.dp else 0.dp)) {
-                Crossfade(Triple(kind, isDay, s.theme), animationSpec = tween(1200), label = "scene") { (k, d, t) -> Scene(k, d, t, s.anim) }
+                val (warm, dusk) = rememberSkyPhase(w)
+                val tilt = rememberTilt(s.anim == Anim.FULL && Prefs.tilt(ctx) && s.rev >= 0)
+                Box(Modifier.fillMaxSize().graphicsLayer {
+                    // the sky leans slightly with the phone; scaled up a touch so edges never show
+                    scaleX = 1.06f; scaleY = 1.06f; translationX = tilt.first * 14.dp.toPx(); translationY = tilt.second * 10.dp.toPx()
+                }) {
+                    Crossfade(Triple(kind, isDay, s.theme), animationSpec = tween(1200), label = "scene") { (k, d, t) -> Scene(k, d, t, s.anim, warm = warm, dusk = dusk) }
+                }
+                AmbienceEffect(kind, !isDay, Prefs.sounds(ctx) && s.rev >= 0)
                 if (s.cities.isEmpty()) {
                     Welcome(s, onSearch = { searching = true }, onLocate = { if (hasPerm()) vm.locateOnce() else perm.launch(COARSE) })
                 } else {
@@ -374,7 +383,8 @@ private fun CityPage(
             item { PageEmpty(city, onRetry) }
             return@LazyColumn
         }
-        item { Hero(w, city.error, Section.YESTERDAY !in hidden) }
+        item { Hero(w, city.error, Section.YESTERDAY !in hidden, city.place) }
+        if (Section.HEADS !in hidden) item { Card(3) { Label("Heads-up", Modifier.padding(start = 16.dp, bottom = 6.dp)); HeadsUp(city.place, w) } }
         if (Section.NEXT2H !in hidden) item { Card(4) { Label("Next 2 hours", Modifier.padding(start = 16.dp, bottom = 10.dp)); NowCast(w) } }
         item { Card(5) { Label("Next 24 hours", Modifier.padding(start = 16.dp, bottom = 10.dp)); HourlyGraph(w.hours) } }
         if (Section.AIR !in hidden || Section.COMFORT !in hidden || Section.EXTRA !in hidden) item {
@@ -401,7 +411,12 @@ private fun CityPage(
                     Text("Hold a tile for the full scale", color = Ink.copy(alpha = 0.3f), fontSize = 10.5.sp, modifier = Modifier.align(Alignment.CenterHorizontally))
             }
         }
-        item { Card(7) { Label("7 days", Modifier.padding(start = 16.dp, bottom = 6.dp)); Daily(w.days) } }
+        item {
+            Card(7) {
+                Label("7 days" + if (w.rainWeek >= 1) " · ${w.rainWeek.roundToInt()} mm rain this week" else "", Modifier.padding(start = 16.dp, bottom = 6.dp))
+                Daily(w.days)
+            }
+        }
         if (Section.RADAR !in hidden) item { Card(8) { RadarCard(city.place, w, LocalPal.current, theme) { Label("Rain radar") } } }
         if (Section.SUN !in hidden) item { Card(9) { Label("Sun & moon", Modifier.padding(start = 16.dp, bottom = 10.dp)); SunMoon(w) } }
         item {
@@ -419,7 +434,9 @@ internal fun Card(i: Int, body: @Composable () -> Unit) {
 }
 
 @Composable
-private fun Hero(w: Weather, error: String?, showYesterday: Boolean) {
+private fun Hero(w: Weather, error: String?, showYesterday: Boolean, place: Place) {
+    val ctx = LocalContext.current
+    val theme = LocalTheme.current
     val pal = LocalPal.current
     val temp = remember { Animatable(0f) }
     LaunchedEffect(w.temp) { temp.animateTo(w.temp.toFloat(), tween(1300, easing = FastOutSlowInEasing)) }
@@ -452,6 +469,11 @@ private fun Hero(w: Weather, error: String?, showYesterday: Boolean) {
                 color = Ink.copy(alpha = 0.32f), fontSize = 11.sp, lineHeight = 16.sp,
                 textAlign = androidx.compose.ui.text.style.TextAlign.End,
             )
+            Text(
+                "Share ↗", color = Dim, fontSize = 11.sp,
+                modifier = Modifier.padding(top = 6.dp).clip(RoundedCornerShape(50)).border(1.dp, Hair, RoundedCornerShape(50))
+                    .clickable { ShareCard.share(ctx, place, w, theme) }.padding(horizontal = 10.dp, vertical = 4.dp),
+            )
         }
     }
 }
@@ -480,6 +502,8 @@ private fun NowCast(w: Weather) {
 @Composable
 private fun HourlyGraph(hours: List<Hour>) {
     val pal = LocalPal.current
+    val haptic = LocalHapticFeedback.current
+    var sel by remember { mutableStateOf(-1) }
     val measurer = rememberTextMeasurer()
     val cell = 56.dp
     val lo = hours.minOfOrNull { it.temp } ?: 0
@@ -489,7 +513,9 @@ private fun HourlyGraph(hours: List<Hour>) {
             hours.forEachIndexed { i, h ->
                 Column(
                     Modifier.width(cell)
-                        .background(if (i == 0) pal.accent.copy(alpha = 0.12f) else Color.Transparent, RoundedCornerShape(18.dp))
+                        .background(if (i == 0 || i == sel) pal.accent.copy(alpha = if (i == sel) 0.2f else 0.12f) else Color.Transparent, RoundedCornerShape(18.dp))
+                        .clip(RoundedCornerShape(18.dp))
+                        .clickable { haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove); sel = if (sel == i) -1 else i }
                         .padding(vertical = 10.dp),
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.spacedBy(7.dp),
@@ -523,6 +549,26 @@ private fun HourlyGraph(hours: List<Hour>) {
                 drawCircle(if (i == 0) Color.White else pal.accent, 3.dp.toPx(), p)
                 val r = measurer.measure("${hours[i].temp}°", style)
                 drawText(r, topLeft = Offset(p.x - r.size.width / 2f, p.y - r.size.height - 5.dp.toPx()))
+            }
+        }
+    }
+    androidx.compose.animation.AnimatedVisibility(sel >= 0, enter = fadeIn() + androidx.compose.animation.expandVertically(), exit = fadeOut() + androidx.compose.animation.shrinkVertically()) {
+        val h = hours.getOrNull(sel) ?: return@AnimatedVisibility
+        Column(
+            Modifier.padding(start = 12.dp, end = 12.dp, top = 8.dp).fillMaxWidth()
+                .background(Color.White.copy(alpha = 0.05f), RoundedCornerShape(14.dp)).border(1.dp, Hair, RoundedCornerShape(14.dp)).padding(12.dp)
+        ) {
+            Text("${h.label} · ${h.temp}° · ${labelOf(h.code)}", color = Ink, fontSize = 13.sp)
+            Row(Modifier.fillMaxWidth().padding(top = 8.dp)) {
+                listOf(
+                    "Feels" to (h.feels?.let { "$it°" } ?: "—"), "Wind" to (h.wind?.toString() ?: "—"),
+                    "Humidity" to (h.humidity?.let { "$it%" } ?: "—"), "Rain" to "${h.precip}% · ${"%.1f".format(h.mm)} mm",
+                ).forEach { (k, v) ->
+                    Column(Modifier.weight(1f)) {
+                        Text(k, color = Dim, fontSize = 11.sp)
+                        Text(v, color = Ink, fontSize = 13.5.sp, fontWeight = FontWeight.Light)
+                    }
+                }
             }
         }
     }
@@ -734,8 +780,8 @@ private fun SunMoon(w: Weather) {
     val (phase, lit, toFull) = remember(w.zone) { moonPhase(java.time.LocalDate.now(runCatching { ZoneId.of(w.zone) }.getOrDefault(ZoneId.systemDefault()))) }
     val progress = remember(w.fetchedAt, w.sunrise) {
         runCatching {
-            val now = LocalTime.now(ZoneId.of(w.zone)); val a = LocalTime.parse(w.sunrise); val b = LocalTime.parse(w.sunset)
-            ((now.toSecondOfDay() - a.toSecondOfDay()).toFloat() / (b.toSecondOfDay() - a.toSecondOfDay()))
+            val now = LocalTime.now(ZoneId.of(w.zone)).let { it.hour * 60 + it.minute }
+            (now - w.sunriseMin!!).toFloat() / (w.sunsetMin!! - w.sunriseMin)
         }.getOrDefault(0.5f)
     }
     Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -989,4 +1035,109 @@ private fun MenuItem(text: String, dim: Boolean = false, onClick: () -> Unit) {
 /** Used when the user turns haptics off. */
 private object NoHaptics : androidx.compose.ui.hapticfeedback.HapticFeedback {
     override fun performHapticFeedback(hapticFeedbackType: HapticFeedbackType) {}
+}
+
+/** Heads-up: warnings, what to wear, commute and rain totals, all worked out from the forecast. */
+@Composable
+private fun HeadsUp(place: Place, w: Weather) {
+    val ctx = LocalContext.current
+    val pal = LocalPal.current
+    val pct = Prefs.rainPct(ctx)
+    val warns = remember(w) { Insights.warnings(w) }
+    val (wear, wearSub) = remember(w) { Insights.wear(w, pct) }
+    val commute = remember(w) { Insights.commute(w, Prefs.commuteTimes(ctx), pct) }
+    val fact = remember(w) { Insights.fact(ctx, place, w) }
+    warns.forEach { warn ->
+        Column(
+            Modifier.padding(horizontal = 12.dp, vertical = 4.dp).fillMaxWidth()
+                .background(pal.accent.copy(alpha = 0.10f), RoundedCornerShape(14.dp)).border(1.dp, pal.accent.copy(alpha = 0.3f), RoundedCornerShape(14.dp))
+                .padding(horizontal = 12.dp, vertical = 10.dp)
+        ) {
+            Text(warn.title, color = Ink, fontSize = 13.sp, fontWeight = FontWeight.Medium)
+            Text(warn.detail, color = Dim, fontSize = 11.5.sp)
+        }
+    }
+    @Composable
+    fun line(icon: String, title: String, sub: String?) {
+        Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            Box(Modifier.size(22.dp).background(pal.accent.copy(alpha = 0.14f), RoundedCornerShape(7.dp)), contentAlignment = Alignment.Center) {
+                Text(icon, color = pal.accent, fontSize = 12.sp)
+            }
+            Column(Modifier.weight(1f)) {
+                Text(title, color = Ink, fontSize = 13.5.sp, lineHeight = 18.sp)
+                if (!sub.isNullOrEmpty()) Text(sub, color = Dim, fontSize = 11.5.sp, lineHeight = 15.sp)
+            }
+        }
+    }
+    line("⊤", wear, wearSub)
+    if (commute.isNotEmpty()) line("⇄", "Commute", commute.joinToString("    ") { "${it.time} · ${it.temp}° · ${if (it.wet) "rain ${it.precip}%" else "dry"}" })
+    val today = if (w.rainToday >= 0.5) "Rain today: ${"%.0f".format(w.rainToday)} mm" else "Rain today: none expected"
+    line("☂", today, listOfNotNull(w.rainWeek.takeIf { it >= 1 }?.let { "${it.roundToInt()} mm this week" }, fact).joinToString(" · "))
+}
+
+/** (warm, dusk) light for the sky from the real sunrise and sunset; re-checked every minute. */
+@Composable
+private fun rememberSkyPhase(w: Weather?): Pair<Float, Float> {
+    val rise = w?.sunriseMin; val set = w?.sunsetMin
+    val now by produceState(0, w?.zone) {
+        while (true) {
+            value = runCatching { LocalTime.now(ZoneId.of(w?.zone ?: "UTC")).let { it.hour * 60 + it.minute } }.getOrDefault(0)
+            delay(60_000)
+        }
+    }
+    if (rise == null || set == null) return 0f to 0f
+    fun bump(x: Int, a: Int, peak: Int, b: Int) = when {
+        x <= a || x >= b -> 0f
+        x <= peak -> (x - a).toFloat() / (peak - a)
+        else -> (b - x).toFloat() / (b - peak)
+    }
+    val warm = maxOf(bump(now, rise - 40, rise + 5, rise + 60), bump(now, set - 75, set - 10, set + 10))
+    val dusk = bump(now, set - 10, set + 15, set + 50)
+    return warm to dusk
+}
+
+/** Phone tilt (-1..1, -1..1) from the gravity sensor, smoothed; only listens while [enabled] and on screen. */
+@Composable
+private fun rememberTilt(enabled: Boolean): Pair<Float, Float> {
+    val ctx = LocalContext.current
+    var x by remember { mutableStateOf(0f) }
+    var y by remember { mutableStateOf(0f) }
+    val lifecycle = androidx.lifecycle.compose.LocalLifecycleOwner.current
+    androidx.compose.runtime.DisposableEffect(enabled, lifecycle) {
+        if (!enabled) { x = 0f; y = 0f; return@DisposableEffect onDispose {} }
+        val sm = ctx.getSystemService(android.hardware.SensorManager::class.java)
+        val g = sm.getDefaultSensor(android.hardware.Sensor.TYPE_GRAVITY)
+        val l = object : android.hardware.SensorEventListener {
+            override fun onSensorChanged(e: android.hardware.SensorEvent) {
+                x += ((-e.values[0] / 9.81f).coerceIn(-1f, 1f) - x) * 0.12f
+                y += (((e.values[1] - 7f) / 9.81f).coerceIn(-1f, 1f) - y) * 0.12f
+            }
+            override fun onAccuracyChanged(s: android.hardware.Sensor?, a: Int) {}
+        }
+        val obs = androidx.lifecycle.LifecycleEventObserver { _, ev ->
+            if (ev == androidx.lifecycle.Lifecycle.Event.ON_RESUME && g != null) sm.registerListener(l, g, android.hardware.SensorManager.SENSOR_DELAY_UI)
+            if (ev == androidx.lifecycle.Lifecycle.Event.ON_PAUSE) sm.unregisterListener(l)
+        }
+        lifecycle.lifecycle.addObserver(obs)
+        if (g != null && lifecycle.lifecycle.currentState.isAtLeast(androidx.lifecycle.Lifecycle.State.RESUMED)) sm.registerListener(l, g, android.hardware.SensorManager.SENSOR_DELAY_UI)
+        onDispose { lifecycle.lifecycle.removeObserver(obs); sm.unregisterListener(l) }
+    }
+    return x to y
+}
+
+/** Plays the weather sound for the current sky while the app is in front and the setting is on. */
+@Composable
+private fun AmbienceEffect(kind: Kind, night: Boolean, on: Boolean) {
+    val lifecycle = androidx.lifecycle.compose.LocalLifecycleOwner.current
+    LaunchedEffect(kind, night) { Ambience.kind = kind; Ambience.night = night }
+    androidx.compose.runtime.DisposableEffect(on, lifecycle) {
+        if (!on) { Ambience.stop(); return@DisposableEffect onDispose {} }
+        val obs = androidx.lifecycle.LifecycleEventObserver { _, ev ->
+            if (ev == androidx.lifecycle.Lifecycle.Event.ON_RESUME) Ambience.start(kind, night)
+            if (ev == androidx.lifecycle.Lifecycle.Event.ON_PAUSE) Ambience.stop()
+        }
+        lifecycle.lifecycle.addObserver(obs)
+        if (lifecycle.lifecycle.currentState.isAtLeast(androidx.lifecycle.Lifecycle.State.RESUMED)) Ambience.start(kind, night)
+        onDispose { lifecycle.lifecycle.removeObserver(obs); Ambience.stop() }
+    }
 }

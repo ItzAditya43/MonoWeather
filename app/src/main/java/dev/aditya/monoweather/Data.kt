@@ -76,8 +76,12 @@ data class Place(val name: String, val detail: String, val lat: Double, val lon:
 }
 
 // ---- what the UI draws ----
-data class Hour(val label: String, val temp: Int, val code: Int, val isDay: Boolean, val precip: Int)
-data class Day(val label: String, val max: Int, val min: Int, val code: Int, val precip: Int)
+data class Hour(
+    val label: String, val temp: Int, val code: Int, val isDay: Boolean, val precip: Int,
+    /** Local hour 0–23, feels-like, wind (display unit), humidity, rain amount in mm. */
+    val hour: Int = 0, val feels: Int? = null, val wind: Int? = null, val humidity: Int? = null, val mm: Double = 0.0,
+)
+data class Day(val label: String, val max: Int, val min: Int, val code: Int, val precip: Int, val mm: Double = 0.0, val date: String = "")
 
 data class Weather(
     val place: String, val temp: Int, val feels: Int, val humidity: Int, val wind: Int,
@@ -99,6 +103,8 @@ data class Weather(
     val feelsHumid: Int, val feelsWind: Int,
     /** Sunrise and sunset as minutes after local midnight, for widgets that place the sun by the clock. */
     val sunriseMin: Int?, val sunsetMin: Int?,
+    /** Rain expected today and over the next 7 days, in mm. */
+    val rainToday: Double = 0.0, val rainWeek: Double = 0.0,
 ) {
     val windUnit get() = units.wind
     val kind get() = kindOf(code)
@@ -107,8 +113,9 @@ data class Weather(
 // ---- what every provider produces (times are local wall-clock "yyyy-MM-ddTHH:mm") ----
 internal data class Cur(val temp: Double, val feels: Double, val humidity: Int, val wind: Double, val code: Int, val isDay: Boolean,
     val dew: Double? = null, val windDir: Int? = null, val gust: Double? = null, val pressure: Double? = null, val visibilityM: Double? = null)
-internal data class HourPt(val time: String, val temp: Double, val code: Int, val precip: Int, val isDay: Boolean, val uv: Double?, val pressure: Double? = null)
-internal data class DayPt(val date: String, val max: Double, val min: Double, val code: Int, val precip: Int, val sunrise: String?, val sunset: String?, val uv: Double?)
+internal data class HourPt(val time: String, val temp: Double, val code: Int, val precip: Int, val isDay: Boolean, val uv: Double?, val pressure: Double? = null,
+    val feels: Double? = null, val windKmh: Double? = null, val humidity: Int? = null, val mm: Double = 0.0)
+internal data class DayPt(val date: String, val max: Double, val min: Double, val code: Int, val precip: Int, val sunrise: String?, val sunset: String?, val uv: Double?, val mm: Double = 0.0)
 internal data class Forecast(val zone: ZoneId, val cur: Cur, val hours: List<HourPt>, val days: List<DayPt>, val quarters: List<Pair<String, Double>>? = null)
 
 /** Steadman apparent temperature (°C), used to split "feels like" into humidity and wind parts. */
@@ -193,7 +200,7 @@ object Repo {
             if (air != null) o.put("air", air)
             prefs(c).edit().putString("cache_${place.key}", o.toString()).apply()
             Net.flush(c)
-            return@withContext build(o, place, Prefs.units(c))
+            return@withContext build(o, place, Prefs.units(c)).also { History.record(c, place, it) }
         }
         Net.flush(c)
         throw last ?: IllegalStateException("No weather source answered")
@@ -216,7 +223,7 @@ object Repo {
         fun dt(x: Double) = if (u.tempF) x * 9 / 5 else x
         val f = if (!u.tempF) f0 else f0.copy(
             cur = f0.cur.copy(temp = t(f0.cur.temp), feels = t(f0.cur.feels), dew = f0.cur.dew?.let(::t)),
-            hours = f0.hours.map { it.copy(temp = t(it.temp)) },
+            hours = f0.hours.map { it.copy(temp = t(it.temp), feels = it.feels?.let(::t)) },
             days = f0.days.map { it.copy(max = t(it.max), min = t(it.min)) },
         )
         val c0 = f0.cur
@@ -227,14 +234,19 @@ object Repo {
         fun clock(hhmm: String) = if (u.clock24) hhmm else runCatching {
             LocalTime.parse(hhmm).format(DateTimeFormatter.ofPattern("h a", Locale.US)).lowercase().replace(" ", "")
         }.getOrDefault(hhmm)
+        // exact times (sunrise, sunset, golden hour, UV peak) keep their minutes
+        fun exact(hhmm: String) = runCatching { fmtClock(LocalTime.parse(hhmm), u.clock24) }.getOrDefault(hhmm)
         val hours = f.hours.drop(start).take(24).mapIndexed { i, h ->
-            Hour(if (i == 0) "Now" else clock(h.time.substring(11, 16)), h.temp.roundToInt(), h.code, h.isDay, h.precip)
+            Hour(
+                if (i == 0) "Now" else clock(h.time.substring(11, 16)), h.temp.roundToInt(), h.code, h.isDay, h.precip,
+                h.time.substring(11, 13).toInt(), h.feels?.roundToInt(), h.windKmh?.let { windIn(it, u.wind) }?.roundToInt(), h.humidity, h.mm,
+            )
         }
         val today = nowLocal.take(10)
         val days = f.days.filter { it.date >= today }.take(7).mapIndexed { n, d ->
             Day(
                 if (n == 0) "Today" else LocalDate.parse(d.date).dayOfWeek.getDisplayName(TextStyle.SHORT, Locale.getDefault()),
-                d.max.roundToInt(), d.min.roundToInt(), d.code, d.precip,
+                d.max.roundToInt(), d.min.roundToInt(), d.code, d.precip, d.mm, d.date,
             )
         }
         val todayPt = f.days.firstOrNull { it.date >= today }
@@ -259,7 +271,7 @@ object Repo {
             humidity = c.humidity, wind = windIn(c0.wind, u.wind).roundToInt(),
             code = c.code, isDay = c.isDay,
             hi = days.firstOrNull()?.max ?: c.temp.roundToInt(), lo = days.firstOrNull()?.min ?: c.temp.roundToInt(),
-            sunrise = sun?.first?.let(::clock) ?: "—", sunset = sun?.second?.let(::clock) ?: "—",
+            sunrise = sun?.first?.let(::exact) ?: "—", sunset = sun?.second?.let(::exact) ?: "—",
             hours = hours, days = days, fetchedAt = o.getLong("at"),
             source = prov.name, aqi = air?.optInt("aqi", -1)?.takeIf { it >= 0 } ?: o.optInt("aqi", -1).takeIf { it >= 0 },
             uv = uvNow?.roundToInt(),
@@ -267,12 +279,12 @@ object Repo {
             windDir = c0.windDir, gust = c0.gust?.let { windIn(it, u.wind) }?.roundToInt(),
             now2h = quarters?.map { it.second }, nowStart = quarters?.first()?.first?.substring(11, 16),
             pm25 = air?.optInt("pm25", -1)?.takeIf { it >= 0 }, pm10 = air?.optInt("pm10", -1)?.takeIf { it >= 0 },
-            uvPeak = uvToday?.uv?.roundToInt(), uvPeakAt = uvToday?.time?.substring(11, 16)?.let(::clock),
+            uvPeak = uvToday?.uv?.roundToInt(), uvPeakAt = uvToday?.time?.substring(11, 16)?.let(::exact),
             zone = f.zone.id,
             vsYesterday = f.days.firstOrNull { it.date == LocalDate.parse(today).minusDays(1).toString() }
                 ?.let { y -> todayPt?.let { (it.max - y.max).roundToInt() } },
             windKmh = c0.wind.roundToInt(), units = u,
-            goldenHour = sunTimes(LocalDate.parse(today), place.lat, place.lon, f.zone, 84.0)?.second?.let(::clock),
+            goldenHour = sunTimes(LocalDate.parse(today), place.lat, place.lon, f.zone, 84.0)?.second?.let(::exact),
             daylight = sun?.let { (a, b) ->
                 runCatching { val m = java.time.Duration.between(LocalTime.parse(a), LocalTime.parse(b)).toMinutes(); "${m / 60}h ${m % 60}m" }.getOrNull()
             } ?: "—",
@@ -283,6 +295,7 @@ object Repo {
             },
             feelsHumid = hum, feelsWind = windFx,
             sunriseMin = mins(sun?.first), sunsetMin = mins(sun?.second),
+            rainToday = days.firstOrNull()?.mm ?: 0.0, rainWeek = days.sumOf { it.mm },
         )
     }
 
@@ -376,9 +389,9 @@ internal object OpenMeteo : Provider {
     override fun fetch(p: Place) = Repo.get(
         "https://api.open-meteo.com/v1/forecast?latitude=${p.lat}&longitude=${p.lon}" +
             "&current=temperature_2m,apparent_temperature,relative_humidity_2m,wind_speed_10m,weather_code,is_day,dew_point_2m,wind_direction_10m,wind_gusts_10m,pressure_msl,visibility" +
-            "&hourly=temperature_2m,weather_code,precipitation_probability,is_day,uv_index,pressure_msl" +
+            "&hourly=temperature_2m,weather_code,precipitation_probability,is_day,uv_index,pressure_msl,apparent_temperature,wind_speed_10m,relative_humidity_2m,precipitation" +
             "&minutely_15=precipitation&forecast_minutely_15=12" +
-            "&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max,sunrise,sunset,uv_index_max" +
+            "&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max,sunrise,sunset,uv_index_max,precipitation_sum" +
             "&timezone=auto&forecast_days=8&past_days=1"
     )
 
@@ -393,6 +406,10 @@ internal object OpenMeteo : Provider {
                 h.getJSONArray("precipitation_probability").optInt(i), h.getJSONArray("is_day").getInt(i) == 1,
                 h.optJSONArray("uv_index")?.optDouble(i)?.takeUnless { it.isNaN() },
                 h.optJSONArray("pressure_msl")?.optDouble(i)?.takeUnless { it.isNaN() },
+                h.optJSONArray("apparent_temperature")?.optDouble(i)?.takeUnless { it.isNaN() },
+                h.optJSONArray("wind_speed_10m")?.optDouble(i)?.takeUnless { it.isNaN() },
+                h.optJSONArray("relative_humidity_2m")?.optInt(i),
+                h.optJSONArray("precipitation")?.optDouble(i)?.takeUnless { it.isNaN() } ?: 0.0,
             )
         }
         val dt = d.getJSONArray("time")
@@ -402,6 +419,7 @@ internal object OpenMeteo : Provider {
                 d.getJSONArray("weather_code").getInt(i), d.getJSONArray("precipitation_probability_max").optInt(i),
                 d.getJSONArray("sunrise").getString(i).substring(11), d.getJSONArray("sunset").getString(i).substring(11),
                 d.optJSONArray("uv_index_max")?.optDouble(i)?.takeUnless { it.isNaN() },
+                d.optJSONArray("precipitation_sum")?.optDouble(i)?.takeUnless { it.isNaN() } ?: 0.0,
             )
         }
         val cur = Cur(
@@ -464,8 +482,10 @@ internal object MetNorway : Provider {
                 else -> true
             }
             val inst = data.getJSONObject("instant").getJSONObject("details")
+            val hourMm = data.optJSONObject("next_1_hours")?.optJSONObject("details")?.optDouble("precipitation_amount", 0.0) ?: 0.0
             hours += HourPt(local.format(FMT), inst.getDouble("air_temperature"), code(symbol), chance(mm), isDay, null,
-                inst.optDouble("air_pressure_at_sea_level").takeUnless { it.isNaN() })
+                inst.optDouble("air_pressure_at_sea_level").takeUnless { it.isNaN() },
+                null, inst.optDouble("wind_speed").takeUnless { it.isNaN() }?.times(3.6), inst.optDouble("relative_humidity").takeUnless { it.isNaN() }?.roundToInt(), hourMm)
         }
         val first = ts.getJSONObject(0).getJSONObject("data").getJSONObject("instant").getJSONObject("details")
         val h0 = hours.first()
@@ -514,18 +534,22 @@ internal object Wttr : Provider {
             val hs = d.getJSONArray("hourly")
             var dayCode = 0
             var dayPrecip = 0
+            var dayMm = 0.0
             for (j in 0 until hs.length()) {
                 val h = hs.getJSONObject(j)
                 val t = LocalTime.of(h.getString("time").toInt() / 100, 0)
                 val wc = code(h.getString("weatherCode").toInt())
                 val pr = maxOf(h.optString("chanceofrain").toIntOrNull() ?: 0, h.optString("chanceofsnow").toIntOrNull() ?: 0)
                 val isDay = if (rise != null && set != null) t >= rise && t < set else t.hour in 6..17
-                hours += HourPt("${date}T${t}", h.getString("tempC").toDouble(), wc, pr, isDay, h.optString("uvIndex").toDoubleOrNull(), h.optString("pressure").toDoubleOrNull())
+                val mm3 = h.optString("precipMM").toDoubleOrNull() ?: 0.0
+                dayMm += mm3
+                hours += HourPt("${date}T${t}", h.getString("tempC").toDouble(), wc, pr, isDay, h.optString("uvIndex").toDoubleOrNull(), h.optString("pressure").toDoubleOrNull(),
+                    h.optString("FeelsLikeC").toDoubleOrNull(), h.optString("windspeedKmph").toDoubleOrNull(), h.optString("humidity").toIntOrNull(), mm3)
                 if (t.hour in 9..18 && severity(wc) > severity(dayCode)) dayCode = wc
                 dayPrecip = maxOf(dayPrecip, pr)
             }
             days += DayPt(date, d.getString("maxtempC").toDouble(), d.getString("mintempC").toDouble(), dayCode, dayPrecip,
-                rise?.toString(), set?.toString(), d.optString("uvIndex").toDoubleOrNull())
+                rise?.toString(), set?.toString(), d.optString("uvIndex").toDoubleOrNull(), dayMm)
         }
         val nowT = LocalTime.now(zone)
         val today = days.firstOrNull()
@@ -552,7 +576,7 @@ private fun aggregate(hours: List<HourPt>, p: Place, zone: ZoneId): List<DayPt> 
         val daytime = hs.filter { it.time.substring(11, 13).toInt() in 9..18 }.ifEmpty { hs }
         val sun = sunTimes(LocalDate.parse(date), p.lat, p.lon, zone)
         DayPt(date, hs.maxOf { it.temp }, hs.minOf { it.temp }, daytime.maxBy { severity(it.code) }.code,
-            hs.maxOf { it.precip }, sun?.first, sun?.second, null)
+            hs.maxOf { it.precip }, sun?.first, sun?.second, null, hs.sumOf { it.mm })
     }
 
 /** Magnus formula, for sources that don't report dew point. */

@@ -370,9 +370,8 @@ object WidgetRenderer {
     private fun sunProgress(w: Weather?): Float {
         if (w == null) return 0.5f
         return runCatching {
-            val now = LocalTime.now(ZoneId.of(w.zone))
-            val rise = LocalTime.parse(w.sunrise); val set = LocalTime.parse(w.sunset)
-            ((now.toSecondOfDay() - rise.toSecondOfDay()).toFloat() / (set.toSecondOfDay() - rise.toSecondOfDay())).coerceIn(0f, 1f)
+            val now = LocalTime.now(ZoneId.of(w.zone)).let { it.hour * 60 + it.minute }
+            ((now - w.sunriseMin!!).toFloat() / (w.sunsetMin!! - w.sunriseMin)).coerceIn(0f, 1f)
         }.getOrDefault(0.5f)
     }
 
@@ -451,7 +450,10 @@ object Sync {
     }
 }
 
-/** Rain-soon and morning-summary notifications for the first (home) city. */
+/**
+ * Notifications for the home city: a live rain countdown (Android 16 Live Update → status chip / Super Island
+ * where the system supports it), commute heads-ups, forecast warnings and a morning summary with what to wear.
+ */
 object Alerts {
     private fun prefs(c: Context) = c.getSharedPreferences("alerts", Context.MODE_PRIVATE)
     fun rainOn(c: Context) = prefs(c).getBoolean("rain", false)
@@ -459,35 +461,133 @@ object Alerts {
     fun setRain(c: Context, on: Boolean) = prefs(c).edit().putBoolean("rain", on).apply()
     fun setMorning(c: Context, on: Boolean) = prefs(c).edit().putBoolean("morning", on).apply()
 
+    private const val ID_RAIN = 1
+    private const val ID_MORNING = 2
+    private const val ID_COMMUTE = 3
+    private const val ID_WARN = 10
+
     fun check(c: Context, w: Weather) {
         val p = prefs(c)
         val now = System.currentTimeMillis()
+        val today = LocalDate.now().toString()
+        val pct = Prefs.rainPct(c)
+
+        // rain on the way within 2 hours
         if (rainOn(c) && w.kind != Kind.RAIN && w.kind != Kind.STORM && now - p.getLong("lastRain", 0) > 3 * 3600_000) {
-            val soon = w.hours.drop(1).take(2).firstOrNull { it.precip >= Prefs.rainPct(c) }
-            if (soon != null) {
-                notify(c, 1, "Rain soon in ${w.place}", "${soon.precip}% chance around ${soon.label}. Take an umbrella.")
+            val minutes = minutesToRain(w, pct)
+            if (minutes != null && minutes in 5..120) {
+                rainSoon(c, w, minutes)
                 p.edit().putLong("lastRain", now).apply()
             }
         }
-        val today = LocalDate.now().toString()
+        // commute: one heads-up 15–45 minutes before each commute time when it looks wet
+        if (Prefs.commuteOn(c)) {
+            val nowT = LocalTime.now()
+            Prefs.commuteTimes(c).forEach { t ->
+                val at = runCatching { LocalTime.parse(if (t.length == 4) "0$t" else t) }.getOrNull() ?: return@forEach
+                val until = java.time.Duration.between(nowT, at).toMinutes()
+                val key = "commute_${t}_$today"
+                if (until in 15..45 && !p.getBoolean(key, false)) {
+                    val h = Insights.commute(w, listOf(t), pct).firstOrNull()
+                    if (h != null && h.wet) {
+                        post(c, ID_COMMUTE, "Wet commute at ${fmtClock(at, w.units.clock24)}", "${h.precip}% rain · ${h.temp}° in ${w.place} · take an umbrella")
+                        p.edit().putBoolean(key, true).apply()
+                    }
+                }
+            }
+        }
+        // forecast warnings, each once per day
+        if (Prefs.warningsOn(c)) Insights.warnings(w).forEachIndexed { i, warn ->
+            val key = "warn_${warn.title.substringBefore(' ')}_$today"
+            if (!p.getBoolean(key, false)) {
+                post(c, ID_WARN + i, warn.title, "${w.place} · ${warn.detail}")
+                p.edit().putBoolean(key, true).apply()
+            }
+        }
+        // morning summary, with what to wear
         val mh = Prefs.morningHour(c)
         if (morningOn(c) && LocalTime.now().hour in mh..(mh + 1) && p.getString("lastMorning", "") != today) {
+            val (wear, _) = Insights.wear(w, pct)
             val d = w.days.firstOrNull()
             val air = w.aqi?.let { " · AQI $it" } ?: ""
-            notify(c, 2, "Today in ${w.place}", "${labelOf(w.code)}, ${w.hi}° / ${w.lo}° · rain ${d?.precip ?: 0}%$air")
+            post(c, ID_MORNING, "Today in ${w.place}: ${w.hi}° / ${w.lo}°", "${labelOf(w.code)} · rain ${d?.precip ?: 0}%$air\n$wear")
             p.edit().putString("lastMorning", today).apply()
         }
     }
 
-    private fun notify(c: Context, id: Int, title: String, text: String) {
-        if (Build.VERSION.SDK_INT >= 33 && c.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) return
+    /** Minutes until rain starts, from the 15-minute timeline when available, else the hourly chances. */
+    fun minutesToRain(w: Weather, pct: Int): Int? {
+        val q = w.now2h
+        if (q != null && w.nowStart != null) {
+            val i = q.indexOfFirst { it >= 0.1 }
+            if (i >= 0) {
+                val start = runCatching { LocalTime.parse(w.nowStart) }.getOrNull() ?: return null
+                val nowT = LocalTime.now(java.time.ZoneId.of(w.zone))
+                return java.time.Duration.between(nowT, start.plusMinutes(15L * i)).toMinutes().toInt().coerceAtLeast(1)
+            }
+            return null
+        }
+        val i = w.hours.drop(1).take(2).indexOfFirst { it.precip >= pct }
+        return if (i < 0) null else (i + 1) * 60 - LocalTime.now().minute
+    }
+
+    /** The rain countdown: a Live Update on Android 16 (ticking chip, Super Island on HyperOS 3.1+), a normal alert otherwise. */
+    fun rainSoon(c: Context, w: Weather, minutes: Int) {
+        if (!canPost(c)) return
+        val nm = channel(c)
+        val startAt = System.currentTimeMillis() + minutes * 60_000L
+        val easing = w.now2h?.let { q ->
+            val s0 = runCatching { LocalTime.parse(w.nowStart) }.getOrNull()
+            val wetFrom = q.indexOfFirst { it >= 0.1 }
+            val dryAgain = if (wetFrom >= 0) q.drop(wetFrom).indexOfFirst { it < 0.1 } else -1
+            if (s0 != null && wetFrom >= 0 && dryAgain > 0) " · easing by ${fmtClock(s0.plusMinutes(15L * (wetFrom + dryAgain)), w.units.clock24)}" else null
+        } ?: ""
+        val word = if ((w.now2h?.max() ?: 0.0) >= 2) "Heavy rain" else if ((w.now2h?.max() ?: 0.0) >= 0.6) "Rain" else "Light rain"
+        val b = android.app.Notification.Builder(c, "weather")
+            .setSmallIcon(R.drawable.ic_stat)
+            .setContentTitle("$word in $minutes min")
+            .setContentText("${w.place}$easing")
+            .setContentIntent(open(c))
+            .setAutoCancel(true)
+            .setWhen(startAt).setShowWhen(true)
+            .setUsesChronometer(true).setChronometerCountDown(true)   // the system ticks the countdown itself
+            .setTimeoutAfter(minutes * 60_000L + 20 * 60_000L)
+        if (Build.VERSION.SDK_INT >= 36 && Prefs.liveOn(c)) {
+            b.setOngoing(true)
+            b.setStyle(
+                android.app.Notification.ProgressStyle()
+                    .setProgressSegments(listOf(android.app.Notification.ProgressStyle.Segment(120)))
+                    .setProgress((120 - minutes).coerceIn(0, 120))
+            )
+            // newer Live Update hooks: called by name so the app still runs where they don't exist
+            runCatching { android.app.Notification.Builder::class.java.getMethod("setShortCriticalText", String::class.java).invoke(b, "$minutes min") }
+            runCatching { android.app.Notification.Builder::class.java.getMethod("setRequestPromotedOngoing", Boolean::class.javaPrimitiveType).invoke(b, true) }
+        }
+        nm.notify(ID_RAIN, b.build())
+    }
+
+    /** Settings → Notifications → "Send a test": shows exactly what this phone does with a live rain alert. */
+    fun test(c: Context, w: Weather?) {
+        if (w != null) rainSoon(c, w, 25) else post(c, ID_RAIN, "Mono test", "Notifications work")
+    }
+
+    private fun canPost(c: Context) =
+        !(Build.VERSION.SDK_INT >= 33 && c.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED)
+
+    private fun channel(c: Context): NotificationManager {
         val nm = c.getSystemService(NotificationManager::class.java)
         nm.createNotificationChannel(NotificationChannel("weather", "Weather alerts", NotificationManager.IMPORTANCE_DEFAULT))
-        val open = PendingIntent.getActivity(c, 0, Intent(c, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE)
+        return nm
+    }
+
+    private fun open(c: Context) = PendingIntent.getActivity(c, 0, Intent(c, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE)
+
+    private fun post(c: Context, id: Int, title: String, text: String) {
+        if (!canPost(c)) return
         val n = android.app.Notification.Builder(c, "weather")
-            .setSmallIcon(R.drawable.ic_stat).setContentTitle(title).setContentText(text)
+            .setSmallIcon(R.drawable.ic_stat).setContentTitle(title).setContentText(text.substringBefore('\n'))
             .setStyle(android.app.Notification.BigTextStyle().bigText(text))
-            .setContentIntent(open).setAutoCancel(true).build()
-        nm.notify(id, n)
+            .setContentIntent(open(c)).setAutoCancel(true).build()
+        channel(c).notify(id, n)
     }
 }

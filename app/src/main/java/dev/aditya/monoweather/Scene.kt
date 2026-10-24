@@ -92,7 +92,11 @@ private fun rnd(i: Int, salt: Int): Float {
 
 /** Full-screen animated backdrop for the current conditions. */
 @Composable
-fun Scene(kind: Kind, isDay: Boolean, theme: Theme, anim: Anim = Anim.FULL, modifier: Modifier = Modifier) {
+/**
+ * [warm] (0..1) is dawn / golden-hour light and [dusk] (0..1) the violet after sunset; both come from the
+ * real sunrise and sunset times, so the sky drifts through the day instead of flipping from day to night.
+ */
+fun Scene(kind: Kind, isDay: Boolean, theme: Theme, anim: Anim = Anim.FULL, modifier: Modifier = Modifier, warm: Float = 0f, dusk: Float = 0f) {
     val mid = theme == Theme.MIDNIGHT
     val pal = paletteFor(theme, kind, isDay)
     // Full: every frame. Reduced: ~24 fps, slower, fewer particles. Off: one still frame (no work at all).
@@ -112,6 +116,8 @@ fun Scene(kind: Kind, isDay: Boolean, theme: Theme, anim: Anim = Anim.FULL, modi
             val c2 = Offset(size.width * 0.05f, size.height * 0.08f)
             drawRect(Brush.radialGradient(0f to pal.glow2.copy(alpha = 0.14f), 1f to Color.Transparent, center = c2, radius = size.height * 0.32f))
         } else drawRect(Brush.verticalGradient(listOf(pal.top, pal.bottom)))
+        if (warm > 0.01f) drawRect(Brush.verticalGradient(0f to Color(0xFFFF9A6B).copy(alpha = 0.26f * warm), 0.45f to Color(0xFFFF6F91).copy(alpha = 0.08f * warm), 0.75f to Color.Transparent))
+        if (dusk > 0.01f) drawRect(Brush.verticalGradient(0f to Color(0xFF8A6BFF).copy(alpha = 0.22f * dusk), 0.5f to Color(0xFFFF7AA8).copy(alpha = 0.06f * dusk), 0.75f to Color.Transparent))
         reach = if (mid) 0.75f else 10f
         amount = if (anim == Anim.FULL) 1f else 0.5f
         band = if (mid) 0.2f else 0.32f
