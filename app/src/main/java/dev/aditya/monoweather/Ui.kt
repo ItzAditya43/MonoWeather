@@ -188,7 +188,7 @@ internal fun nowText(w: Weather): String {
     }
     val wet = { v: Double -> v >= 0.05 }
     val start = runCatching { LocalTime.parse(w.nowStart) }.getOrDefault(LocalTime.now())
-    fun at(i: Int) = start.plusMinutes(15L * i).toString()
+    fun at(i: Int) = fmtClock(start.plusMinutes(15L * i), w.units.clock24)
     val peak = q.max()
     val word = when { peak < 0.6 -> "Light rain"; peak < 2 -> "Rain"; else -> "Heavy rain" }
     return when {
@@ -825,7 +825,7 @@ private fun Pill(text: String, filled: Boolean, onClick: () -> Unit) {
 
 private val POPULAR = listOf("Delhi", "Pune", "Hyderabad", "Chennai", "Goa", "Tokyo", "Dubai")
 
-private fun localTime(tz: String) = runCatching { LocalTime.now(ZoneId.of(tz)).toString().take(5) }.getOrDefault("")
+private fun localTime(tz: String, clock24: Boolean) = runCatching { fmtClock(LocalTime.now(ZoneId.of(tz)), clock24) }.getOrDefault("")
 
 @OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
@@ -926,7 +926,7 @@ private fun SearchSheet(cities: List<City>, onPick: (Place) -> Unit, onRemove: (
                             )
                             if (p.detail.isNotEmpty()) Text(p.detail, color = Dim, fontSize = 12.sp)
                         }
-                        Text("${localTime(p.tz)}\nlocal time", color = Dim, fontSize = 11.5.sp, lineHeight = 15.sp, textAlign = androidx.compose.ui.text.style.TextAlign.End)
+                        Text("${localTime(p.tz, Prefs.units(LocalContext.current).clock24)}\nlocal time", color = Dim, fontSize = 11.5.sp, lineHeight = 15.sp, textAlign = androidx.compose.ui.text.style.TextAlign.End)
                     }
                     HorizontalDivider(color = Hair)
                 }
@@ -957,7 +957,7 @@ private fun CityCard(c: City, home: Boolean, onPick: () -> Unit, onRemove: () ->
             Column {
                 Text(w?.let { "${it.temp}°" } ?: "—", color = Ink, fontSize = 36.sp, fontWeight = FontWeight.ExtraLight, lineHeight = 38.sp)
                 Text(c.place.name, color = Ink, fontSize = 14.sp, fontWeight = FontWeight.Medium, maxLines = 1)
-                Text(listOfNotNull(w?.let { labelOf(it.code) }, localTime(c.place.tz)).joinToString(" · "), color = Dim, fontSize = 11.sp, maxLines = 1)
+                Text(listOfNotNull(w?.let { labelOf(it.code) }, localTime(c.place.tz, Prefs.units(LocalContext.current).clock24)).joinToString(" · "), color = Dim, fontSize = 11.sp, maxLines = 1)
             }
         }
         if (home) Text(

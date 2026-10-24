@@ -78,11 +78,16 @@ object Prefs {
 
     // background refresh log, newest first, last 12 entries
     fun log(c: Context, line: String) {
-        val entries = (listOf("${LocalTime.now().toString().take(5)}  $line") + logEntries(c)).take(12)
+        val entries = (listOf("${fmtClock(LocalTime.now(), units(c).clock24)}  $line") + logEntries(c)).take(12)
         p(c).edit().putString("log", entries.joinToString("\n")).apply()
     }
     fun logEntries(c: Context) = p(c).getString("log", "")!!.lines().filter { it.isNotBlank() }
 }
+
+/** Formats a clock time the way the user chose in Settings → Units (24h "13:45", 12h "1:45 pm"). */
+fun fmtClock(t: LocalTime, clock24: Boolean): String =
+    if (clock24) "%02d:%02d".format(t.hour, t.minute)
+    else t.format(java.time.format.DateTimeFormatter.ofPattern("h:mm a", java.util.Locale.US)).lowercase()
 
 /** Bytes downloaded since the last flush into [Prefs.addBytes]. */
 object Net {

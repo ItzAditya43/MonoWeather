@@ -98,7 +98,7 @@ private fun bitmap(url: String): ImageBitmap? = runCatching {
 
 private var appCtx: android.content.Context? = null
 
-private suspend fun load(p: Place): RadarData = withContext(Dispatchers.IO) {
+private suspend fun load(p: Place, clock24: Boolean): RadarData = withContext(Dispatchers.IO) {
     memo[p.key]?.let { (at, d) -> if (System.currentTimeMillis() - at < 10 * 60_000) return@withContext d }
     val (x, y) = tileXY(p.lat, p.lon)
     val cx = floor(x).toInt(); val cy = floor(y).toInt()
@@ -116,7 +116,7 @@ private suspend fun load(p: Place): RadarData = withContext(Dispatchers.IO) {
         val frames = picks.map { i ->
             val f = past.getJSONObject(i)
             async {
-                val label = Instant.ofEpochSecond(f.getLong("time")).atZone(zone).toLocalTime().toString().take(5)
+                val label = fmtClock(Instant.ofEpochSecond(f.getLong("time")).atZone(zone).toLocalTime(), clock24)
                 Frame(label, cells.map { (tx, ty) -> bitmap("$host${f.getString("path")}/256/$Z/$tx/$ty/2/1_1.png") })
             }
         }
@@ -149,7 +149,7 @@ fun RadarCard(place: Place, w: Weather, pal: Palette, theme: Theme, label: @Comp
     LaunchedEffect(state, place.key) {
         if (state != "loading") return@LaunchedEffect
         appCtx = ctx.applicationContext
-        runCatching { load(place) }.onSuccess { data = it; frame = it.frames.lastIndex; state = "ready" }.onFailure { state = "failed" }
+        runCatching { load(place, Prefs.units(ctx).clock24) }.onSuccess { data = it; frame = it.frames.lastIndex; state = "ready" }.onFailure { state = "failed" }
     }
     LaunchedEffect(data, playing) {
         val n = data?.frames?.size ?: return@LaunchedEffect

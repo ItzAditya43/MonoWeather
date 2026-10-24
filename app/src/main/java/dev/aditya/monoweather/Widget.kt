@@ -155,6 +155,15 @@ object WidgetRenderer {
             v.setInt(R.id.w_fx, "setFlipInterval", if (anim == Anim.REDUCED) 400 else 220)
         }
         v.setTextViewText(R.id.w_temp, w?.let { "${it.temp}°" } ?: "--")
+        // widget clocks follow Mono's 12h/24h setting, not the phone's
+        val c24 = Prefs.units(c).clock24
+        val clockFmt = when (design) {
+            Design.TYPE -> if (c24) "HH:mm · EEE d MMM" else "h:mm a · EEE d MMM"
+            Design.ORBIT -> if (c24) "HH:mm" else "h:mm"
+            else -> if (c24) "HH:mm" else "h:mm a"
+        }
+        v.setCharSequence(R.id.w_clock, "setFormat12Hour", clockFmt)
+        v.setCharSequence(R.id.w_clock, "setFormat24Hour", clockFmt)
         // each widget gets its own tap intent; the tap's screen bounds teach glass widgets where they sit
         val tap = Intent(c, MainActivity::class.java).putExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, id ?: -1)
         val open = PendingIntent.getActivity(c, id ?: 0, tap, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
@@ -326,7 +335,7 @@ object WidgetRenderer {
             t.typeface = light; t.textSize = 11.5f * d; t.color = android.graphics.Color.WHITE
             cv.drawText("${hs[i].temp}°", x, y - 8 * d, t)
             t.typeface = regular; t.textSize = 10 * d; t.color = DIM
-            cv.drawText(if (i == 0) "now" else hs[i].label.take(2), x, b.height - 6 * d, t)
+            cv.drawText(if (i == 0) "now" else if (':' in hs[i].label) hs[i].label.take(2) else hs[i].label, x, b.height - 6 * d, t)
         }
         return b
     }
@@ -396,8 +405,9 @@ object WidgetRenderer {
         val q = w.now2h ?: return "${labelOf(w.code)} · ${w.hours.drop(1).take(2).maxOfOrNull { it.precip } ?: 0}% rain chance"
         if (q.none { it >= 0.05 }) return "${labelOf(w.code)} · dry for the next 2 hours"
         val start = runCatching { LocalTime.parse(w.nowStart) }.getOrNull() ?: return "Rain in the next 2 hours"
-        return if (q[0] >= 0.05) q.indexOfFirst { it < 0.05 }.let { if (it < 0) "Rain for the next 2 hours" else "Rain now, easing by ${start.plusMinutes(15L * it)}" }
-        else "Rain likely from ${start.plusMinutes(15L * q.indexOfFirst { it >= 0.05 })}"
+        fun at(i: Int) = fmtClock(start.plusMinutes(15L * i), w.units.clock24)
+        return if (q[0] >= 0.05) q.indexOfFirst { it < 0.05 }.let { if (it < 0) "Rain for the next 2 hours" else "Rain now, easing by ${at(it)}" }
+        else "Rain likely from ${at(q.indexOfFirst { it >= 0.05 })}"
     }
 }
 
